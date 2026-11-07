@@ -595,6 +595,16 @@ promoted to stable releases (see [docs/VERSIONING.md](docs/VERSIONING.md)); the 
 
 ### Fixes
 
+- **No more towers of ground at the end of a road**: a kerb's nearly vertical face gave the
+  surrounding terrain a slope of tens of thousands, raising thin strips of ground through
+  the road surface or high into the sky (reported on Berlin-Spandau and X10,
+  [#3339](https://github.com/openOMSI-org/openOMSI/issues/3339) and
+  [#3774](https://github.com/openOMSI-org/openOMSI/issues/3774)). The slope a rim hands to
+  the ground is now limited to about 72 degrees; ordinary road slopes stay unchanged.
+- **Grass no longer covers a road lying just below the saved ground**: the fitted terrain kept
+  the saved ground up to a metre over such a road, so grass could show through the asphalt
+  (reported on Berlin-Spandau after the spike fix). The ground is now lowered under the road;
+  deeper underpasses and tunnels keep their saved roof.
 - **No more slivers of sky at crossings of raised roads** (Nova Friburgo, since 0.3.42): where
   the ground cannot be fitted to roads it should follow, only the roads the ground covers (a
   ditch) are cut out of it, not those lying on it.

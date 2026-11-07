@@ -189,11 +189,20 @@ impl Field {
 
     fn height(&self, p: DVec2, base: f64, terrain_at: &impl Fn(DVec2) -> f64) -> f64 {
         let h = self.raw_height(p, base, terrain_at);
-        // Limit the new fill, without excavating pre-existing terrain over an
-        // underpass or tunnel. The small clearance avoids coplanar road flicker.
-        self.roads
-            .as_ref()
-            .map_or(h, |roads| h.min(roads.road_limit(p, h).max(base - 0.003)))
+        let Some(roads) = self.roads.as_ref() else {
+            return h;
+        };
+        let limit = roads.road_limit(p, h);
+        // A road a little below the saved ground still has to show: leave no
+        // grass over its asphalt. Deep below it, the saved ground is an
+        // underpass/tunnel roof, not a trough to excavate. The small clearance
+        // avoids coplanar road flicker.
+        let trough = roads.surface(p).is_some_and(|z| base - z <= CUTTING_DEPTH);
+        h.min(if trough {
+            limit
+        } else {
+            limit.max(base - 0.003)
+        })
     }
 
     fn road_limit(&self, p: DVec2, h: f64) -> f64 {

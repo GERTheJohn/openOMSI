@@ -578,6 +578,48 @@ fn fit_profiles(
     fit(terrain, &field, &terrain_at)
 }
 
+/// Bins where the saved ground covers a road shallow enough to be a trough.
+/// Road stations and saved-grid samples are independent probes: a hill can
+/// rise between road stations, and a narrow road can fall between grid points.
+fn covered_road_bins(
+    field: &Field,
+    n: usize,
+    cell: f64,
+    terrain_at: &impl Fn(DVec2) -> f64,
+) -> Vec<bool> {
+    let mut covered = vec![false; field.bins * field.bins];
+    let Some(roads) = field.roads.as_ref() else {
+        return covered;
+    };
+    let mut mark = |p: DVec3| {
+        let base = terrain_at(p.truncate());
+        if base > p.z + EPS && base - p.z < CUTTING_DEPTH {
+            let (x, y) = roads.bin(p.truncate());
+            covered[y * field.bins + x] = true;
+        }
+    };
+    for tri in &roads.triangles {
+        for p in tri.iter().copied() {
+            mark(p);
+        }
+        for [a, b] in [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]] {
+            for t in [0.25, 0.5, 0.75] {
+                mark(a.lerp(b, t));
+            }
+        }
+        mark((tri[0] + tri[1] + tri[2]) / 3.0);
+    }
+    for y in 0..=n {
+        for x in 0..=n {
+            let p = DVec2::new(x as f64 * cell, y as f64 * cell);
+            if let Some(z) = roads.surface(p) {
+                mark(p.extend(z));
+            }
+        }
+    }
+    covered
+}
+
 fn fit(
     terrain: &Terrain,
     field: &Field,
@@ -675,37 +717,7 @@ fn fit(
     // the tile switches off the kerb constraints and saved-grid triangles
     // straddle the asphalt again (the diagonal grass seams on Berlin-Spandau).
     let include_roads = field.triangles.is_empty() && field.edges.is_empty();
-    let mut covered_bins = vec![false; field.bins * field.bins];
-    if let Some(roads) = field.roads.as_ref() {
-        let mut mark = |p: DVec3| {
-            let base = terrain_at(p.truncate());
-            if base > p.z + EPS && base - p.z < CUTTING_DEPTH {
-                let (x, y) = roads.bin(p.truncate());
-                covered_bins[y * field.bins + x] = true;
-            }
-        };
-        for tri in &roads.triangles {
-            for p in tri.iter().copied() {
-                mark(p);
-            }
-            for [a, b] in [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]] {
-                for t in [0.25, 0.5, 0.75] {
-                    mark(a.lerp(b, t));
-                }
-            }
-            mark((tri[0] + tri[1] + tri[2]) / 3.0);
-        }
-        // A saved hill can rise between the road's own stations. Keep the
-        // saved-grid samples as a second, independent coverage probe.
-        for y in 0..=n {
-            for x in 0..=n {
-                let p = DVec2::new(x as f64 * cell, y as f64 * cell);
-                if let Some(z) = roads.surface(p) {
-                    mark(p.extend(z));
-                }
-            }
-        }
-    }
+    let covered_bins = covered_road_bins(field, n, cell, terrain_at);
     let keep_road = |points: &[DVec3]| {
         if include_roads || field.affects(points, STEP + 2.0 * NORMAL_STEP) {
             return true;

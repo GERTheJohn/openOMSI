@@ -1209,6 +1209,117 @@ fn a_road_just_below_the_saved_ground_is_not_covered_by_grass() {
 }
 
 #[test]
+fn many_covered_roads_do_not_exhaust_the_fit_budget() {
+    let profile = narrow_kerb();
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let roads: Vec<_> = (0..14)
+        .flat_map(|lane| {
+            let x = 10.0 + lane as f32 * 20.0;
+            // Two strips sharing a kerb-less internal edge, as multi-profile
+            // streets do. The shared edge is not an exterior shoulder.
+            [0.0, 3.0].map(|dx| MeshData {
+                positions: vec![
+                    Vec3::new(x + dx, 0.0, 0.0),
+                    Vec3::new(x + dx + 3.0, 0.0, 0.0),
+                    Vec3::new(x + dx + 3.0, tile_size() as f32, 0.0),
+                    Vec3::new(x + dx, tile_size() as f32, 0.0),
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                ..Default::default()
+            })
+        })
+        .collect();
+    let roads: Vec<_> = roads.iter().map(|m| (m, DVec3::ZERO)).collect();
+    let mesh =
+        try_build_fitted_terrain_mesh_with_roads(&saved, &[(&profile, DVec3::ZERO)], &[], &roads)
+            .expect("covering many roads must refine the fit, not restore the saved grid");
+    closed_tile(&mesh);
+    for lane in 0..14 {
+        let x = 13.0 + lane as f64 * 20.0;
+        assert!(sample(&mesh, x, 150.0) <= -0.002);
+    }
+}
+
+#[test]
+fn a_distant_profile_must_not_hide_a_covered_roads_kerb() {
+    // The profile is in other spatial bins. Its presence must not switch off
+    // the boundary constraints of a road whose asphalt covers the saved ground.
+    let profile = narrow_kerb();
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let road = MeshData {
+        positions: vec![
+            Vec3::new(180.2, 40.2, 0.0),
+            Vec3::new(200.3, 40.2, 0.0),
+            Vec3::new(200.3, 160.3, 0.0),
+            Vec3::new(180.2, 160.3, 0.0),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        ..Default::default()
+    };
+    let mesh = try_build_fitted_terrain_mesh_with_roads(
+        &saved,
+        &[(&profile, DVec3::ZERO)],
+        &[],
+        &[(&road, DVec3::ZERO)],
+    )
+    .expect("the covered road must be fitted, not restored to the saved grid");
+    closed_tile(&mesh);
+    for t in road.indices.chunks_exact(3) {
+        let [a, b, c] = [0, 1, 2].map(|i| road.positions[t[i] as usize].as_dvec3());
+        for i in 0..=8 {
+            for j in 0..=8 - i {
+                let u = 0.01 + 0.98 * i as f64 / 8.0;
+                let v = 0.01 + 0.98 * j as f64 / 8.0;
+                let p = a * (1.0 - u - v).max(0.0) + b * u + c * v;
+                let h = sample(&mesh, p.x, p.y);
+                assert!(
+                    h <= p.z - 0.002,
+                    "a distant profile left grass over the road at {p:?}: {h} m"
+                );
+            }
+        }
+    }
+    assert!((sample(&mesh, 150.0, 50.0) - 0.05).abs() < 1e-6);
+}
+
+#[test]
+fn a_distant_profile_must_not_hide_a_road_narrower_than_the_saved_grid() {
+    let profile = narrow_kerb();
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let road = MeshData {
+        positions: vec![
+            Vec3::new(180.13, 40.2, 0.0),
+            Vec3::new(180.33, 40.2, 0.0),
+            Vec3::new(180.33, 160.3, 0.0),
+            Vec3::new(180.13, 160.3, 0.0),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        ..Default::default()
+    };
+    let mesh = try_build_fitted_terrain_mesh_with_roads(
+        &saved,
+        &[(&profile, DVec3::ZERO)],
+        &[],
+        &[(&road, DVec3::ZERO)],
+    )
+    .unwrap();
+    closed_tile(&mesh);
+    for y in [40.3, 50.0, 100.0, 160.2] {
+        let h = sample(&mesh, 180.23, y);
+        assert!(h <= -0.002, "a narrow covered road at y={y}: {h} m");
+    }
+}
+
+#[test]
 fn road_clearance_keeps_the_saved_roof_at_the_cutting_depth() {
     let mut road = Field::new(60);
     road.add_triangle([

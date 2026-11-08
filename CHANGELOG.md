@@ -604,9 +604,10 @@ promoted to stable releases (see [docs/VERSIONING.md](docs/VERSIONING.md)); the 
 - **Grass no longer covers a road lying just below the saved ground**: the fitted terrain kept
   the saved ground up to a metre over such a road, so grass could show through the asphalt
   (reported on Berlin-Spandau after the spike fix). The ground is now lowered under the road,
-  including on tiles whose roads have no terrain profile of their own; its triangles follow the
-  road edges instead of leaving diagonal grass seams at the kerb. Deeper underpasses and tunnels
-  keep their saved roof.
+  including on tiles whose roads have no terrain profile of their own and beside unrelated
+  profiles elsewhere on the same tile; its triangles follow the road edges instead of leaving
+  diagonal grass seams at the kerb. Shared edges of multi-strip roads are sampled once, so busy
+  tiles stay within the fitting budget. Deeper underpasses and tunnels keep their saved roof.
 - **No more slivers of sky at crossings of raised roads** (Nova Friburgo, since 0.3.42): where
   the ground cannot be fitted to roads it should follow, only the roads the ground covers (a
   ditch) are cut out of it, not those lying on it.

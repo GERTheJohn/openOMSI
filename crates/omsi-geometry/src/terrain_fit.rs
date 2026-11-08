@@ -197,7 +197,7 @@ impl Field {
         // grass over its asphalt. Deep below it, the saved ground is an
         // underpass/tunnel roof, not a trough to excavate. The small clearance
         // avoids coplanar road flicker.
-        let trough = roads.surface(p).is_some_and(|z| base - z <= CUTTING_DEPTH);
+        let trough = roads.surface(p).is_some_and(|z| base - z < CUTTING_DEPTH);
         h.min(if trough {
             limit
         } else {
@@ -428,16 +428,9 @@ fn fit_profiles(
     {
         return Err(TerrainFitError::Complexity);
     }
-    if profiles
-        .iter()
-        .all(|(profile, _)| profile.mesh.indices.is_empty())
-    {
-        return Ok(build_terrain_mesh(terrain));
-    }
     let terrain_at = |p: DVec2| {
-        saved_ground(terrain, neighbors, p).unwrap_or_else(|| {
-            super::terrain_walls::height(terrain, p, tile_size())
-        })
+        saved_ground(terrain, neighbors, p)
+            .unwrap_or_else(|| super::terrain_walls::height(terrain, p, tile_size()))
     };
     // Side shoulders need a full ground cell even if the lip itself is already
     // aligned: the saved hill can rise steeply immediately beside that lip.
@@ -532,7 +525,8 @@ fn fit_profiles(
     }
     // (a profile that ends a few metres outside the tile has no triangle in it, but its
     // shoulder still moves the border: the neighbor, which holds the triangles, fits it)
-    if field.triangles.is_empty() && field.edges.is_empty() {
+    let roads_only = field.triangles.is_empty() && field.edges.is_empty();
+    if roads_only && roads.is_empty() {
         return Ok(build_terrain_mesh(terrain));
     }
     // Retain the complete road height field, including its clearance. Only CDT
@@ -550,6 +544,36 @@ fn fit_profiles(
             }
         }
         field.roads = Some(Box::new(ceiling));
+    }
+    if roads_only {
+        // A bridge or a deep underpass does not need a fitted trough. Fit a
+        // profile-less tile only where the saved ground actually covers asphalt.
+        let ceiling = field.roads.as_ref().unwrap();
+        let covers = |p: DVec2, z: f64| {
+            let base = terrain_at(p);
+            base > z + EPS && base - z < CUTTING_DEPTH
+        };
+        let mut needed = ceiling.triangles.iter().any(|tri| {
+            let center = (tri[0] + tri[1] + tri[2]) / 3.0;
+            tri.iter()
+                .chain(std::iter::once(&center))
+                .any(|p| covers(p.truncate(), p.z))
+        });
+        if !needed {
+            let cell = tile_size() / terrain.cells as f64;
+            'grid: for y in 0..=terrain.cells {
+                for x in 0..=terrain.cells {
+                    let p = DVec2::new(x as f64 * cell, y as f64 * cell);
+                    if ceiling.surface(p).is_some_and(|z| covers(p, z)) {
+                        needed = true;
+                        break 'grid;
+                    }
+                }
+            }
+        }
+        if !needed {
+            return Ok(build_terrain_mesh(terrain));
+        }
     }
     fit(terrain, &field, &terrain_at)
 }
@@ -646,18 +670,21 @@ fn fit(
             }
         }
     }
+    // Without profile bins there is nothing to cull road edges against: the
+    // road rims themselves must seed the fit, or saved-grid triangles straddle
+    // the asphalt and leave diagonal grass seams at the kerb.
+    let include_roads = field.triangles.is_empty() && field.edges.is_empty();
     // Coplanar source triangles do not introduce a height crease. Keep their
     // boundary and true slope changes instead of cutting the ground at every
     // road/spline station and diagonal. The full height field is unchanged.
-    let creases = sampling::creases(
-        field.triangles.iter().chain(
-            field
-                .roads
-                .iter()
-                .flat_map(|r| &r.triangles)
-                .filter(|tri| field.affects(&tri[..], STEP + 2.0 * NORMAL_STEP)),
-        ),
-    );
+    let creases =
+        sampling::creases(
+            field.triangles.iter().chain(
+                field.roads.iter().flat_map(|r| &r.triangles).filter(|tri| {
+                    include_roads || field.affects(&tri[..], STEP + 2.0 * NORMAL_STEP)
+                }),
+            ),
+        );
     for [a, b] in creases {
         if let Some(segment) = segment(a, b) {
             constraints.push(segment);
@@ -669,13 +696,9 @@ fn fit(
         field
             .edges
             .iter()
-            .chain(
-                field
-                    .roads
-                    .iter()
-                    .flat_map(|r| &r.edges)
-                    .filter(|edge| field.affects(&edge.points, STEP + 2.0 * NORMAL_STEP)),
-            )
+            .chain(field.roads.iter().flat_map(|r| &r.edges).filter(|edge| {
+                include_roads || field.affects(&edge.points, STEP + 2.0 * NORMAL_STEP)
+            }))
             .map(|edge| (edge.points, edge.width))
             .collect(),
     );

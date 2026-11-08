@@ -1070,7 +1070,10 @@ fn a_ditch_ending_short_of_the_border_still_moves_both_sides_alike() {
         for i in 0..200 {
             let y = 28.0 + i as f64 * 0.1;
             let (a, b) = (sample(&left, tile_size(), y), sample(&right, 0.0, y));
-            assert!((a - b).abs() < 0.0001, "end {end} m before the border, y {y}: {a} != {b}");
+            assert!(
+                (a - b).abs() < 0.0001,
+                "end {end} m before the border, y {y}: {a} != {b}"
+            );
         }
     }
 }
@@ -1080,15 +1083,24 @@ fn a_spline_in_a_cutting_is_left_to_the_hole_but_a_trough_is_not() {
     let c = curve([40.0, 40.0, 0.0], 0.0, 0.0);
     let profile = test_profile(&ditch(), &c, false, 1, DVec3::ZERO);
     let mut hill = ground();
-    assert!(!profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]), "flat ground");
+    assert!(
+        !profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]),
+        "flat ground"
+    );
     for v in hill.heights.iter_mut() {
         *v = 0.5;
     }
-    assert!(!profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]), "a lip 0.5 m under the hill");
+    assert!(
+        !profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]),
+        "a lip 0.5 m under the hill"
+    );
     for v in hill.heights.iter_mut() {
         *v = 5.0;
     }
-    assert!(profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]), "a 5 m cutting");
+    assert!(
+        profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]),
+        "a 5 m cutting"
+    );
 }
 
 #[test]
@@ -1193,6 +1205,81 @@ fn a_road_just_below_the_saved_ground_is_not_covered_by_grass() {
                 "saved ground covers the road at ({x}, {y}): {h} m"
             );
         }
+    }
+}
+
+#[test]
+fn road_clearance_keeps_the_saved_roof_at_the_cutting_depth() {
+    let mut road = Field::new(60);
+    road.add_triangle([
+        DVec3::new(40.0, 40.0, 0.0),
+        DVec3::new(60.0, 40.0, 0.0),
+        DVec3::new(50.0, 60.0, 0.0),
+    ]);
+    let mut field = Field::new(60);
+    field.roads = Some(Box::new(road));
+    let p = DVec2::new(50.0, 50.0);
+    for (base, expected) in [(0.999, -0.003), (1.0, 0.997), (2.0, 1.997)] {
+        let h = field.height(p, base, &|_| base);
+        assert!((h - expected).abs() < 1e-9, "saved ground {base} m: {h} m");
+    }
+}
+
+#[test]
+fn a_road_without_terrain_profiles_still_keeps_the_saved_ground_below_it() {
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let road = MeshData {
+        positions: vec![
+            Vec3::new(40.2, 40.2, 0.0),
+            Vec3::new(59.8, 40.2, 0.0),
+            Vec3::new(59.8, 59.8, 0.0),
+            Vec3::new(40.2, 59.8, 0.0),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        ..Default::default()
+    };
+    let mesh = try_build_fitted_terrain_mesh_with_roads(&saved, &[], &[], &[(&road, DVec3::ZERO)])
+        .expect("a road-only tile must fit, not fall back to the saved ground");
+    closed_tile(&mesh);
+    for x in [40.3, 41.0, 50.0, 59.7] {
+        for y in [40.3, 41.0, 50.0, 59.7] {
+            let h = sample(&mesh, x, y);
+            assert!(
+                h <= -0.002,
+                "grass over a profile-less road at ({x}, {y}): {h} m"
+            );
+        }
+    }
+    assert!((sample(&mesh, 30.0, 50.0) - 0.05).abs() < 1e-6);
+}
+
+#[test]
+fn roads_without_profiles_leave_bridges_and_deep_underpasses_unchanged() {
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let expected = build_terrain_mesh(&saved);
+    for z in [1.0, -2.0] {
+        let road = MeshData {
+            positions: vec![
+                Vec3::new(40.0, 40.0, z),
+                Vec3::new(60.0, 40.0, z),
+                Vec3::new(60.0, 60.0, z),
+                Vec3::new(40.0, 60.0, z),
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        let mesh =
+            try_build_fitted_terrain_mesh_with_roads(&saved, &[], &[], &[(&road, DVec3::ZERO)])
+                .unwrap();
+        assert_eq!(mesh.positions, expected.positions, "road at {z} m");
+        assert_eq!(mesh.indices, expected.indices, "road at {z} m");
+        assert_eq!(mesh.normals, expected.normals, "road at {z} m");
     }
 }
 

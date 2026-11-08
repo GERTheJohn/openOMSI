@@ -8,6 +8,18 @@ promoted to stable releases (see [docs/VERSIONING.md](docs/VERSIONING.md)); the 
 
 ### New
 
+- **AI reaction time**: the new `ai_reaction` setting (25 to 200 %, default 100 %, a slider in the launcher's Traffic settings) scales how long the AI drivers wait before moving off, so a queue at a light pulls away closer together at a lower value. It never goes under 0.4 s, the shortest reaction the junction code is built for (#3793).
+- **What's new in the launcher**: after an update the launcher shows the notes of every
+  version since the one last seen, opened, and the others folded below them; *What's new*
+  beside *Check now* (Settings) opens them at any time, and the offer of an update shows that
+  version's notes before it is installed. The notes come from the releases on GitHub; links in
+  them open in the browser, and only https ones.
+- **Remote cockpit on a phone or tablet**: the game serves a page on your home network
+  (Options > Interface > Remote cockpit, off until switched on); scan the QR code or type the
+  address and the 6-digit code, and the phone or tablet shows a dashboard with the map and the
+  route, the bus's own buttons (every door, lights, indicators, kneeling...), its real
+  destination sign, a touch steering wheel and pedals, and a layout editor per bus. Nothing to
+  install, nothing leaves the network.
 - **Mouse steering keeps the system cursor in the window**: with *Hold the cursor while steering*
   off, the cursor is the system's own (no frame of delay) and now stays inside the game window
   while the mouse steers, so a hard turn no longer lets it slip onto another screen (Windows and
@@ -583,6 +595,37 @@ promoted to stable releases (see [docs/VERSIONING.md](docs/VERSIONING.md)); the 
 
 ### Fixes
 
+- **No more towers of ground at the end of a road**: a kerb's nearly vertical face gave the
+  surrounding terrain a slope of tens of thousands, raising thin strips of ground through
+  the road surface or high into the sky (reported on Berlin-Spandau and X10,
+  [#3339](https://github.com/openOMSI-org/openOMSI/issues/3339) and
+  [#3774](https://github.com/openOMSI-org/openOMSI/issues/3774)). The slope a rim hands to
+  the ground is now limited to about 72 degrees; ordinary road slopes stay unchanged.
+- **Grass no longer covers a road lying just below the saved ground**: the fitted terrain kept
+  the saved ground up to a metre over such a road, so grass could show through the asphalt
+  (reported on Berlin-Spandau after the spike fix). The ground is now lowered under the road,
+  including on tiles whose roads have no terrain profile of their own and beside unrelated
+  profiles elsewhere on the same tile; its triangles follow the road edges instead of leaving
+  diagonal grass seams at the kerb. Shared edges of multi-strip roads are sampled once, so busy
+  tiles stay within the fitting budget. Deeper underpasses and tunnels keep their saved roof.
+- **No more slivers of sky at crossings of raised roads** (Nova Friburgo, since 0.3.42): where
+  the ground cannot be fitted to roads it should follow, only the roads the ground covers (a
+  ditch) are cut out of it, not those lying on it.
+- **Window films and tinted glass of Brazilian buses show again**: a number written in an
+  `[alphascale]` in place of a variable's name (`[alphascale] 0.9`, as the LFD Caio Apache
+  Vip V's window film, its outer and its frosted glass have it) is that opacity, as a number
+  already is for lamps and interior lights. Read as a variable that does not exist it was 0,
+  and those panes were not drawn at all. Panes named in Portuguese (`vidro`, `janela`,
+  `parabrisa`) are now known as glass, as those named in the other languages.
+- **A junction left deep under the ground no longer digs a pit**: a `[terrainhole]` cutter that lies
+  wholly more than ten metres under the ground cuts nothing now. Berlin-Spandau has a stray
+  copy of `Einm_Poststr_Poststr` at height zero in the corner of a tile near Falkensee Bahnhof;
+  its cutter opened a pit thirty metres deep in the field, walled with tall strips of ground.
+  Tunnels and underpasses, whose cutters reach the ground or lie a few metres under it, cut as before.
+- **A key or a wheel's button can recentre head tracking**: *Head tracking: centre again* takes
+  where your head is now as the middle (opentrack, native TrackIR and a Tobii eye tracker), without
+  putting the view straight as F1 does. It is on the keys list without a key; a button that already
+  had it in `gamectrler.cfg` did nothing until now.
 - **The flashlight no longer follows a hidden cursor**: with *Flashlight follows the cursor* on,
   the cursor hidden while a controller drives still steered the beam; now the beam shines
   straight ahead until the mouse brings the cursor back.
@@ -668,6 +711,9 @@ promoted to stable releases (see [docs/VERSIONING.md](docs/VERSIONING.md)); the 
   the launcher's passenger settings, `pax_short_rides_stand`, off by default), a passenger with
   no set stop who rides under about three kilometres takes the free standing place nearest an exit
   of their car instead of a seat; with no standing place free, they board as before (#2242).
+- **A new livery without a new bus.** Vehicle options › *Livery* lists the bus's liveries (with a
+  search, as the launcher's list); the one chosen is painted onto the bus you drive where it
+  stands, with its passengers, trip, odometer and fuel as they were (#3638).
 - **Graphics that fit the computer from the first start.** On a first start (no settings file,
   no drive and no map loaded before), the game
   picks a quality preset from its best graphics chip before it opens the window's renderer: Low
@@ -1029,6 +1075,60 @@ promoted to stable releases (see [docs/VERSIONING.md](docs/VERSIONING.md)); the 
   lookups the Adreno 710 refused ([#2009](https://github.com/openOMSI-org/openOMSI/issues/2009)).
 ### Multiplayer
 
+- **The map's timetable buses show their fleet number, plate and the right destination for
+  every player**, not only on the server or the hosting game: the host now tells each player
+  the number and plate it drew for a bus and the depot file it reads its signs from. A player's
+  copy showed no number and read the destination in the depot file that player chose for their
+  own bus, so it showed another sign.
+- **People no longer vanish in front of the players of a server.** When the pool of people
+  (`ai_max_humans`) is full, somebody walking or standing out of sight is taken to make room,
+  as in OMSI 2. A dedicated server judged "out of sight" from its own camera, where nobody
+  plays, so it took people standing beside the players - passengers who had just got off a
+  bus among them. Now nobody near any player is taken.
+- **A server sets its own AI limits** in `server.cfg`: `ai_unsched_factor` (the random
+  traffic, percent of the map's density), `ai_max_scheduled`, `ai_max_parked` and
+  `ai_max_humans`, as the game's options have them. Left empty, the machine's `settings.cfg`
+  says, as before. They count for the whole server, so a busy one can raise them.
+- **A server that cannot keep up keeps the day.** Its world clock (the day, the timetable,
+  what the players are told) moved with its physics steps, so a server short of CPU fell
+  behind the day for good, silently: at half its steps, half a day's timetable in a day. It
+  follows the wall now, at most twice as fast while it takes back what it lost; the physics
+  still take their fixed steps, and the log says when the machine cannot keep up.
+- **The launcher shows a server's date** beside its time and weather (in the list and before
+  joining), from the server's status page (`date`); an older server shows none.
+- **Joining a busy server is quicker.** A player loading holds one of the eight loading
+  slots only while their game is heard from: one closed or stuck no longer keeps the others
+  waiting for two minutes.
+- **A server still loading its world lets players in once it is ready**, telling them it is
+  loading (an older game is told to try again); before, one let in met an empty world.
+- **A game joining through a server's tunnel tries its direct address first**, which a quick
+  tunnel's breaking connections do not touch, and keeps the tunnel if it does not answer within
+  three seconds. The server finds the address by itself: its own internet address, else the
+  one the internet sees if it reaches itself there - never behind a carrier's NAT (CGNAT), so
+  nobody waits on an address that cannot answer. `public_address` in `server.cfg` names
+  another, or `off` tells none.
+- **Many players fetching buses at once no longer take a server's CPU.** Every piece of a bus
+  was packed the moment it was asked for, on the thread of its connection (up to 160 of them),
+  and once more for every player who asked: players downloading together packed on every core,
+  and the server's traffic and people fell behind. A quarter of the cores pack at most, the
+  others' downloads wait their turn, and a piece packed is kept for the next player. A bus a
+  player sends a dedicated server is packed at its smallest at once, in the background, so the
+  others fetch it ready.
+- **A server's fleet bus is listed once, not once per player.** A player asking for a bus of
+  the server's fleet had the server load it and read every file of every paint again (the
+  seconds a bus takes in the fleet check), once for each paint asked for: many players at once
+  took every core. The list the fleet check made at the start is given instead, while the bus's
+  files are as they were; a list to make again is made by one request at a time.
+- **The launcher says why a game could not host.** When a game started to host by code could
+  not open its session (its port taken by another program, or refused by a firewall or an
+  antivirus: since 0.3.47 it reserves a TCP port for its mods beside the UDP one, and checks
+  it reaches itself there), Invite friends waited for a code that never came, without a word.
+  It now shows the game's reason.
+- **The map's buses show the server's signs on every player.** The server sends each player
+  the depot file (`.hof`) its AI buses use (else the one of that name in `HOFs`), and the
+  player's game draws those buses with it, whatever depot files it has itself.
+- **Multiplayer protocol 17.** A game of this version and a server of this version play
+  together; older ones are turned away at the door, as at every protocol change.
 - **A dedicated server opens its web port at once, before checking its fleet.** With a
   `vehicles` list, the server read and hashed every file of every bus and paint before the
   WebSocket gateway opened, so for minutes `/status`, the players and the admin page were

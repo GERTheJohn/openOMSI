@@ -189,11 +189,20 @@ impl Field {
 
     fn height(&self, p: DVec2, base: f64, terrain_at: &impl Fn(DVec2) -> f64) -> f64 {
         let h = self.raw_height(p, base, terrain_at);
-        // Limit the new fill, without excavating pre-existing terrain over an
-        // underpass or tunnel. The small clearance avoids coplanar road flicker.
-        self.roads
-            .as_ref()
-            .map_or(h, |roads| h.min(roads.road_limit(p, h).max(base - 0.003)))
+        let Some(roads) = self.roads.as_ref() else {
+            return h;
+        };
+        let limit = roads.road_limit(p, h);
+        // A road a little below the saved ground still has to show: leave no
+        // grass over its asphalt. Deep below it, the saved ground is an
+        // underpass/tunnel roof, not a trough to excavate. The small clearance
+        // avoids coplanar road flicker.
+        let trough = roads.surface(p).is_some_and(|z| base - z < CUTTING_DEPTH);
+        h.min(if trough {
+            limit
+        } else {
+            limit.max(base - 0.003)
+        })
     }
 
     fn road_limit(&self, p: DVec2, h: f64) -> f64 {
@@ -419,16 +428,9 @@ fn fit_profiles(
     {
         return Err(TerrainFitError::Complexity);
     }
-    if profiles
-        .iter()
-        .all(|(profile, _)| profile.mesh.indices.is_empty())
-    {
-        return Ok(build_terrain_mesh(terrain));
-    }
     let terrain_at = |p: DVec2| {
-        saved_ground(terrain, neighbors, p).unwrap_or_else(|| {
-            super::terrain_walls::height(terrain, p, tile_size())
-        })
+        saved_ground(terrain, neighbors, p)
+            .unwrap_or_else(|| super::terrain_walls::height(terrain, p, tile_size()))
     };
     // Side shoulders need a full ground cell even if the lip itself is already
     // aligned: the saved hill can rise steeply immediately beside that lip.
@@ -523,7 +525,8 @@ fn fit_profiles(
     }
     // (a profile that ends a few metres outside the tile has no triangle in it, but its
     // shoulder still moves the border: the neighbor, which holds the triangles, fits it)
-    if field.triangles.is_empty() && field.edges.is_empty() {
+    let roads_only = field.triangles.is_empty() && field.edges.is_empty();
+    if roads_only && roads.is_empty() {
         return Ok(build_terrain_mesh(terrain));
     }
     // Retain the complete road height field, including its clearance. Only CDT
@@ -542,7 +545,79 @@ fn fit_profiles(
         }
         field.roads = Some(Box::new(ceiling));
     }
+    if roads_only {
+        // A bridge or a deep underpass does not need a fitted trough. Fit a
+        // profile-less tile only where the saved ground actually covers asphalt.
+        let ceiling = field.roads.as_ref().unwrap();
+        let covers = |p: DVec2, z: f64| {
+            let base = terrain_at(p);
+            base > z + EPS && base - z < CUTTING_DEPTH
+        };
+        let mut needed = ceiling.triangles.iter().any(|tri| {
+            let center = (tri[0] + tri[1] + tri[2]) / 3.0;
+            tri.iter()
+                .chain(std::iter::once(&center))
+                .any(|p| covers(p.truncate(), p.z))
+        });
+        if !needed {
+            let cell = tile_size() / terrain.cells as f64;
+            'grid: for y in 0..=terrain.cells {
+                for x in 0..=terrain.cells {
+                    let p = DVec2::new(x as f64 * cell, y as f64 * cell);
+                    if ceiling.surface(p).is_some_and(|z| covers(p, z)) {
+                        needed = true;
+                        break 'grid;
+                    }
+                }
+            }
+        }
+        if !needed {
+            return Ok(build_terrain_mesh(terrain));
+        }
+    }
     fit(terrain, &field, &terrain_at)
+}
+
+/// Bins where the saved ground covers a road shallow enough to be a trough.
+/// Road stations and saved-grid samples are independent probes: a hill can
+/// rise between road stations, and a narrow road can fall between grid points.
+fn covered_road_bins(
+    field: &Field,
+    n: usize,
+    cell: f64,
+    terrain_at: &impl Fn(DVec2) -> f64,
+) -> Vec<bool> {
+    let mut covered = vec![false; field.bins * field.bins];
+    let Some(roads) = field.roads.as_ref() else {
+        return covered;
+    };
+    let mut mark = |p: DVec3| {
+        let base = terrain_at(p.truncate());
+        if base > p.z + EPS && base - p.z < CUTTING_DEPTH {
+            let (x, y) = roads.bin(p.truncate());
+            covered[y * field.bins + x] = true;
+        }
+    };
+    for tri in &roads.triangles {
+        for p in tri.iter().copied() {
+            mark(p);
+        }
+        for [a, b] in [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]] {
+            for t in [0.25, 0.5, 0.75] {
+                mark(a.lerp(b, t));
+            }
+        }
+        mark((tri[0] + tri[1] + tri[2]) / 3.0);
+    }
+    for y in 0..=n {
+        for x in 0..=n {
+            let p = DVec2::new(x as f64 * cell, y as f64 * cell);
+            if let Some(z) = roads.surface(p) {
+                mark(p.extend(z));
+            }
+        }
+    }
+    covered
 }
 
 fn fit(
@@ -637,6 +712,24 @@ fn fit(
             }
         }
     }
+    // Profile bins may cull a road's *shoulder* refinement, but never a road
+    // that the saved ground actually covers. Otherwise a profile elsewhere on
+    // the tile switches off the kerb constraints and saved-grid triangles
+    // straddle the asphalt again (the diagonal grass seams on Berlin-Spandau).
+    let include_roads = field.triangles.is_empty() && field.edges.is_empty();
+    let covered_bins = covered_road_bins(field, n, cell, terrain_at);
+    let keep_road = |points: &[DVec3]| {
+        if include_roads || field.affects(points, STEP + 2.0 * NORMAL_STEP) {
+            return true;
+        }
+        let Some(roads) = field.roads.as_ref() else {
+            return false;
+        };
+        let Some([x0, y0, x1, y1]) = roads.bounds(points, STEP) else {
+            return false;
+        };
+        (y0..=y1).any(|y| (x0..=x1).any(|x| covered_bins[y * field.bins + x]))
+    };
     // Coplanar source triangles do not introduce a height crease. Keep their
     // boundary and true slope changes instead of cutting the ground at every
     // road/spline station and diagonal. The full height field is unchanged.
@@ -646,7 +739,7 @@ fn fit(
                 .roads
                 .iter()
                 .flat_map(|r| &r.triangles)
-                .filter(|tri| field.affects(&tri[..], STEP + 2.0 * NORMAL_STEP)),
+                .filter(|tri| keep_road(&tri[..])),
         ),
     );
     for [a, b] in creases {
@@ -655,31 +748,88 @@ fn fit(
         }
     }
     // Join only straight sampling runs. The original rims, height field and all
-    // profile/road crease constraints remain unchanged.
-    let runs = sampling::runs(
+    // profile/road crease constraints remain unchanged. Adjacent road strips
+    // share an edge; sample it once, not once per strip.
+    fn road_edge_key(&(points, width): &([DVec3; 2], f64)) -> ([[u64; 3]; 2], u64) {
+        let mut k = points.map(|p| p.to_array().map(|v| if v == 0.0 { 0 } else { v.to_bits() }));
+        if k[0] > k[1] {
+            k.swap(0, 1);
+        }
+        (k, width.to_bits())
+    }
+    let mut road_edges: Vec<_> = field
+        .roads
+        .iter()
+        .flat_map(|r| &r.edges)
+        .filter(|edge| keep_road(&edge.points))
+        .map(|edge| (edge.points, edge.width))
+        .collect();
+    road_edges.sort_by_key(|edge| road_edge_key(edge));
+    road_edges.dedup_by_key(|edge| road_edge_key(edge));
+    let runs: Vec<_> = sampling::runs(
         field
             .edges
             .iter()
-            .chain(
-                field
-                    .roads
-                    .iter()
-                    .flat_map(|r| &r.edges)
-                    .filter(|edge| field.affects(&edge.points, STEP + 2.0 * NORMAL_STEP)),
-            )
             .map(|edge| (edge.points, edge.width))
             .collect(),
-    );
-    for (points, width) in runs {
+    )
+    .into_iter()
+    .map(|run| (false, run))
+    .chain(
+        sampling::runs(road_edges)
+            .into_iter()
+            .map(|run| (true, run)),
+    )
+    .collect();
+    for (road, (points, width)) in runs {
         let [a, b] = points.map(|p| p.truncate());
         let normal = DVec2::new(-(b - a).y, (b - a).x).normalize();
         if !width.is_finite() || width > tile_size() {
             return Err(TerrainFitError::Complexity);
         }
         let steps = (width / STEP).ceil() as i32;
-        let distances = (-steps..=steps)
-            .map(|step| width * step as f64 / steps as f64)
-            .chain([-0.25, -0.125, -0.06, -0.03, 0.03, 0.06, 0.125, 0.25]);
+        let both_sides = || {
+            (-steps..=steps)
+                .map(|step| width * step as f64 / steps as f64)
+                .chain([-0.25, -0.125, -0.06, -0.03, 0.03, 0.06, 0.125, 0.25])
+                .collect::<Vec<_>>()
+        };
+        let distances = if road {
+            // Inside the asphalt the road triangles themselves are the height
+            // field; only the exterior shoulder needs a dense fade. Sampling
+            // both sides of every road rim doubled the probe budget and made
+            // busy tiles fall back to the very saved grid that covers roads.
+            let roads = field.roads.as_ref().unwrap();
+            let mid = a.lerp(b, 0.5);
+            let reach = width.min(STEP) * 0.25;
+            let pos = roads.surface(mid + normal * reach).is_some();
+            let neg = roads.surface(mid - normal * reach).is_some();
+            let outward = if pos && !neg {
+                -1.0
+            } else if neg && !pos {
+                1.0
+            } else {
+                0.0
+            };
+            if pos && neg {
+                // Road on both sides: an internal strip joint, not a shoulder.
+                vec![0.0]
+            } else if outward == 0.0 {
+                both_sides()
+            } else {
+                let mut d = vec![0.0];
+                d.extend((1..=steps).map(|step| outward * width * step as f64 / steps as f64));
+                d.extend(
+                    [0.03, 0.06, 0.125, 0.25]
+                        .into_iter()
+                        .map(|v| outward * v)
+                        .filter(|v| v.abs() < width),
+                );
+                d
+            }
+        } else {
+            both_sides()
+        };
         for distance in distances {
             let Some([a, b]) = segment(a + normal * distance, b + normal * distance) else {
                 continue;

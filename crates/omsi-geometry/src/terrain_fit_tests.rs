@@ -1070,7 +1070,10 @@ fn a_ditch_ending_short_of_the_border_still_moves_both_sides_alike() {
         for i in 0..200 {
             let y = 28.0 + i as f64 * 0.1;
             let (a, b) = (sample(&left, tile_size(), y), sample(&right, 0.0, y));
-            assert!((a - b).abs() < 0.0001, "end {end} m before the border, y {y}: {a} != {b}");
+            assert!(
+                (a - b).abs() < 0.0001,
+                "end {end} m before the border, y {y}: {a} != {b}"
+            );
         }
     }
 }
@@ -1080,13 +1083,347 @@ fn a_spline_in_a_cutting_is_left_to_the_hole_but_a_trough_is_not() {
     let c = curve([40.0, 40.0, 0.0], 0.0, 0.0);
     let profile = test_profile(&ditch(), &c, false, 1, DVec3::ZERO);
     let mut hill = ground();
-    assert!(!profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]), "flat ground");
+    assert!(
+        !profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]),
+        "flat ground"
+    );
     for v in hill.heights.iter_mut() {
         *v = 0.5;
     }
-    assert!(!profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]), "a lip 0.5 m under the hill");
+    assert!(
+        !profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]),
+        "a lip 0.5 m under the hill"
+    );
     for v in hill.heights.iter_mut() {
         *v = 5.0;
     }
-    assert!(profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]), "a 5 m cutting");
+    assert!(
+        profile_in_cutting(&profile, DVec3::ZERO, &hill, &[]),
+        "a 5 m cutting"
+    );
+}
+
+#[test]
+fn the_rim_of_a_nearly_vertical_face_hands_the_ground_a_bounded_slope() {
+    let mesh = MeshData {
+        positions: vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.5, 0.00001, 1.0),
+        ],
+        indices: vec![0, 1, 2],
+        ..Default::default()
+    };
+    let rims = terrain_fit_surface::boundary(&mesh, DVec3::ZERO);
+    assert_eq!(rims.len(), 3);
+    for (_, gradient) in rims {
+        assert!(
+            gradient.x.abs() < 1e-9 && (gradient.y - 3.0).abs() < 1e-9,
+            "gradient {gradient:?}"
+        );
+    }
+}
+
+#[test]
+fn the_rim_of_a_gentle_face_keeps_its_slope() {
+    let mesh = MeshData {
+        positions: vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.5),
+        ],
+        indices: vec![0, 1, 2],
+        ..Default::default()
+    };
+    for (_, gradient) in terrain_fit_surface::boundary(&mesh, DVec3::ZERO) {
+        assert!(
+            gradient.x.abs() < 1e-9 && (gradient.y - 0.5).abs() < 1e-9,
+            "gradient {gradient:?}"
+        );
+    }
+}
+
+/// A synthetic 15 cm kerb with a 0.01 mm footprint; no original map content.
+fn narrow_kerb() -> SplineTerrainProfile {
+    SplineTerrainProfile {
+        mesh: MeshData {
+            positions: vec![
+                Vec3::new(40.0, 40.0, 0.0),
+                Vec3::new(40.00001, 40.0, 0.15),
+                Vec3::new(40.00001, 60.0, 0.15),
+                Vec3::new(40.0, 60.0, 0.0),
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        },
+        ends: None,
+    }
+}
+
+#[test]
+fn a_narrow_kerb_does_not_raise_towers_in_the_fitted_terrain() {
+    let profile = narrow_kerb();
+    let mesh = build_fitted_terrain_mesh(&ground(), &[(&profile, DVec3::ZERO)]);
+    closed_tile(&mesh);
+    let highest = mesh.positions.iter().map(|p| p.z.abs()).fold(0.0, f32::max);
+    assert!(highest < 1.0, "kerb rim raised ground to {highest} m");
+    for x in [39.75, 39.9, 40.1, 40.25] {
+        let h = sample(&mesh, x, 50.0);
+        assert!(h.abs() < 0.5, "ground beside the kerb at x={x}: {h} m");
+    }
+}
+
+#[test]
+fn a_road_just_below_the_saved_ground_is_not_covered_by_grass() {
+    let profile = narrow_kerb();
+    let road = MeshData {
+        positions: vec![
+            Vec3::new(40.2, 40.0, 0.02),
+            Vec3::new(44.0, 40.0, 0.02),
+            Vec3::new(44.0, 60.0, 0.02),
+            Vec3::new(40.2, 60.0, 0.02),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        ..Default::default()
+    };
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.2; 61 * 61],
+    };
+    let mesh = build_fitted_terrain_mesh_with_roads(
+        &saved,
+        &[(&profile, DVec3::ZERO)],
+        &[],
+        &[(&road, DVec3::ZERO)],
+    );
+    closed_tile(&mesh);
+    for x in [40.3, 41.0, 43.9] {
+        for y in [40.1, 45.0, 50.0, 59.9] {
+            let h = sample(&mesh, x, y);
+            assert!(
+                h <= 0.018,
+                "saved ground covers the road at ({x}, {y}): {h} m"
+            );
+        }
+    }
+}
+
+#[test]
+fn many_covered_roads_do_not_exhaust_the_fit_budget() {
+    let profile = narrow_kerb();
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let roads: Vec<_> = (0..14)
+        .flat_map(|lane| {
+            let x = 10.0 + lane as f32 * 20.0;
+            // Two strips sharing a kerb-less internal edge, as multi-profile
+            // streets do. The shared edge is not an exterior shoulder.
+            [0.0, 3.0].map(|dx| MeshData {
+                positions: vec![
+                    Vec3::new(x + dx, 0.0, 0.0),
+                    Vec3::new(x + dx + 3.0, 0.0, 0.0),
+                    Vec3::new(x + dx + 3.0, tile_size() as f32, 0.0),
+                    Vec3::new(x + dx, tile_size() as f32, 0.0),
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                ..Default::default()
+            })
+        })
+        .collect();
+    let roads: Vec<_> = roads.iter().map(|m| (m, DVec3::ZERO)).collect();
+    let mesh =
+        try_build_fitted_terrain_mesh_with_roads(&saved, &[(&profile, DVec3::ZERO)], &[], &roads)
+            .expect("covering many roads must refine the fit, not restore the saved grid");
+    closed_tile(&mesh);
+    for lane in 0..14 {
+        let x = 13.0 + lane as f64 * 20.0;
+        assert!(sample(&mesh, x, 150.0) <= -0.002);
+    }
+}
+
+#[test]
+fn a_distant_profile_must_not_hide_a_covered_roads_kerb() {
+    // The profile is in other spatial bins. Its presence must not switch off
+    // the boundary constraints of a road whose asphalt covers the saved ground.
+    let profile = narrow_kerb();
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let road = MeshData {
+        positions: vec![
+            Vec3::new(180.2, 40.2, 0.0),
+            Vec3::new(200.3, 40.2, 0.0),
+            Vec3::new(200.3, 160.3, 0.0),
+            Vec3::new(180.2, 160.3, 0.0),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        ..Default::default()
+    };
+    let mesh = try_build_fitted_terrain_mesh_with_roads(
+        &saved,
+        &[(&profile, DVec3::ZERO)],
+        &[],
+        &[(&road, DVec3::ZERO)],
+    )
+    .expect("the covered road must be fitted, not restored to the saved grid");
+    closed_tile(&mesh);
+    for t in road.indices.chunks_exact(3) {
+        let [a, b, c] = [0, 1, 2].map(|i| road.positions[t[i] as usize].as_dvec3());
+        for i in 0..=8 {
+            for j in 0..=8 - i {
+                let u = 0.01 + 0.98 * i as f64 / 8.0;
+                let v = 0.01 + 0.98 * j as f64 / 8.0;
+                let p = a * (1.0 - u - v).max(0.0) + b * u + c * v;
+                let h = sample(&mesh, p.x, p.y);
+                assert!(
+                    h <= p.z - 0.002,
+                    "a distant profile left grass over the road at {p:?}: {h} m"
+                );
+            }
+        }
+    }
+    assert!((sample(&mesh, 150.0, 50.0) - 0.05).abs() < 1e-6);
+}
+
+#[test]
+fn a_distant_profile_must_not_hide_a_road_narrower_than_the_saved_grid() {
+    let profile = narrow_kerb();
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let road = MeshData {
+        positions: vec![
+            Vec3::new(180.13, 40.2, 0.0),
+            Vec3::new(180.33, 40.2, 0.0),
+            Vec3::new(180.33, 160.3, 0.0),
+            Vec3::new(180.13, 160.3, 0.0),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        ..Default::default()
+    };
+    let mesh = try_build_fitted_terrain_mesh_with_roads(
+        &saved,
+        &[(&profile, DVec3::ZERO)],
+        &[],
+        &[(&road, DVec3::ZERO)],
+    )
+    .unwrap();
+    closed_tile(&mesh);
+    for y in [40.3, 50.0, 100.0, 160.2] {
+        let h = sample(&mesh, 180.23, y);
+        assert!(h <= -0.002, "a narrow covered road at y={y}: {h} m");
+    }
+}
+
+#[test]
+fn road_clearance_keeps_the_saved_roof_at_the_cutting_depth() {
+    let mut road = Field::new(60);
+    road.add_triangle([
+        DVec3::new(40.0, 40.0, 0.0),
+        DVec3::new(60.0, 40.0, 0.0),
+        DVec3::new(50.0, 60.0, 0.0),
+    ]);
+    let mut field = Field::new(60);
+    field.roads = Some(Box::new(road));
+    let p = DVec2::new(50.0, 50.0);
+    for (base, expected) in [(0.999, -0.003), (1.0, 0.997), (2.0, 1.997)] {
+        let h = field.height(p, base, &|_| base);
+        assert!((h - expected).abs() < 1e-9, "saved ground {base} m: {h} m");
+    }
+}
+
+#[test]
+fn a_road_without_terrain_profiles_still_keeps_the_saved_ground_below_it() {
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let road = MeshData {
+        positions: vec![
+            Vec3::new(40.2, 40.2, 0.0),
+            Vec3::new(59.8, 40.2, 0.0),
+            Vec3::new(59.8, 59.8, 0.0),
+            Vec3::new(40.2, 59.8, 0.0),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        ..Default::default()
+    };
+    let mesh = try_build_fitted_terrain_mesh_with_roads(&saved, &[], &[], &[(&road, DVec3::ZERO)])
+        .expect("a road-only tile must fit, not fall back to the saved ground");
+    closed_tile(&mesh);
+    for x in [40.3, 41.0, 50.0, 59.7] {
+        for y in [40.3, 41.0, 50.0, 59.7] {
+            let h = sample(&mesh, x, y);
+            assert!(
+                h <= -0.002,
+                "grass over a profile-less road at ({x}, {y}): {h} m"
+            );
+        }
+    }
+    assert!((sample(&mesh, 30.0, 50.0) - 0.05).abs() < 1e-6);
+}
+
+#[test]
+fn roads_without_profiles_leave_bridges_and_deep_underpasses_unchanged() {
+    let saved = Terrain {
+        cells: 60,
+        heights: vec![0.05; 61 * 61],
+    };
+    let expected = build_terrain_mesh(&saved);
+    for z in [1.0, -2.0] {
+        let road = MeshData {
+            positions: vec![
+                Vec3::new(40.0, 40.0, z),
+                Vec3::new(60.0, 40.0, z),
+                Vec3::new(60.0, 60.0, z),
+                Vec3::new(40.0, 60.0, z),
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        let mesh =
+            try_build_fitted_terrain_mesh_with_roads(&saved, &[], &[], &[(&road, DVec3::ZERO)])
+                .unwrap();
+        assert_eq!(mesh.positions, expected.positions, "road at {z} m");
+        assert_eq!(mesh.indices, expected.indices, "road at {z} m");
+        assert_eq!(mesh.normals, expected.normals, "road at {z} m");
+    }
+}
+
+#[test]
+fn a_narrow_kerb_keeps_a_bounded_shoulder_and_clearance_under_the_road() {
+    let profile = narrow_kerb();
+    let road = MeshData {
+        positions: vec![
+            Vec3::new(40.2, 40.0, 0.02),
+            Vec3::new(44.0, 40.0, 0.02),
+            Vec3::new(44.0, 60.0, 0.02),
+            Vec3::new(40.2, 60.0, 0.02),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        ..Default::default()
+    };
+    let mesh = build_fitted_terrain_mesh_with_roads(
+        &ground(),
+        &[(&profile, DVec3::ZERO)],
+        &[],
+        &[(&road, DVec3::ZERO)],
+    );
+    closed_tile(&mesh);
+    for x in [40.3, 41.0, 43.9] {
+        for y in [40.1, 45.0, 50.0, 59.9] {
+            let h = sample(&mesh, x, y);
+            assert!(h <= 0.018, "ground covers the road at ({x}, {y}): {h} m");
+        }
+    }
+    for x in [39.75, 40.05, 40.15] {
+        for y in [45.0, 50.0, 55.0] {
+            let h = sample(&mesh, x, y);
+            assert!(h.abs() < 0.5, "kerb shoulder at ({x}, {y}): {h} m");
+        }
+    }
 }

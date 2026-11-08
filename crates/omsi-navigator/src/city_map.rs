@@ -54,6 +54,7 @@ pub struct CityMap {
     /// The turn of the view (radians): the map direction that points up on the screen lies this far clockwise from the
     /// map's up. Eased.
     pub(super) phi: f64,
+    closed_at: Option<std::time::Instant>,
 }
 
 /// A city map ground being built: what for.
@@ -78,7 +79,7 @@ struct CityGround {
 
 /// The city map's camera: its view-projection (relative to `centre`) and its inverse.
 pub(super) struct CityCam {
-    vp: Mat4,
+    pub(super) vp: Mat4,
     inv: Mat4,
 }
 
@@ -88,7 +89,7 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 }
 
 impl Navigator {
-    /// Where OMSI 2's dynamic route arrows stand on the route ahead (the `nav_arrows`
+    /// Where OMSI 2's dynamic route arrows stand on the route ahead (the `nav_dynamic_arrows`
     /// setting): every junction lane of the next `reach` metres with the way through it
     /// (`L`, `R`, or `dn` for straight on), and the stops of the trip ahead with their
     /// names (`busstop`). Each: a key that stays the same while it is ahead, the place,
@@ -515,7 +516,9 @@ impl Navigator {
         let tilt = self.city.tilt;
         let centre = self.city.center;
         // (tilted, the far part of the view reaches well beyond the middle's scale)
-        let radius = (w.max(h) as f64 * mpp * (0.8 + 1.4 * tilt as f64)).max(500.0);
+        let cam = Self::city_cam(mpp, tilt, self.city.phi, w, h);
+        let visible_reach = super::build::view::ground_reach(cam.vp).unwrap_or_else(|| (w.max(h) as f64 * mpp * (0.8 + 1.4 * tilt as f64)).max(500.0));
+        let radius = super::build::view::padded(visible_reach);
         let detail = (mpp < 0.7) as u64 | ((mpp < 2.2) as u64) << 1 | ((mpp < 3.5) as u64) << 2 | ((mpp < 6.0) as u64) << 3;
         let band = self.contour_band();
         let key = self.look_key() ^ detail << 40 ^ self.global_version << 48 ^ band.map_or(0, |b| 1 + b.1) << 60;
@@ -535,7 +538,7 @@ impl Navigator {
         }
         let stale = match self.city.ground {
             None => true,
-            Some(g) => g.key != key || (g.centre - centre).length() > g.radius * 0.35 || g.mpp / mpp > 1.7 || mpp / g.mpp > 1.7,
+            Some(g) => g.key != key || (g.centre - centre).length() + visible_reach > g.radius || g.mpp / mpp > 1.7 || mpp / g.mpp > 1.7,
         };
         if stale && arrived.is_none() {
             let look = if self.classic_2d {
@@ -544,6 +547,7 @@ impl Navigator {
                 GroundLook { surfaces: mpp < 0.7, trees: mpp < 0.7, dashes: mpp < 3.5, tol: 0.0 }
             };
             let mut parts = self.ground_parts(net, band.map(|b| b.0));
+            parts.house_reach = Some((w.max(h) as f64 * mpp * (0.8 + 1.4 * tilt as f64)).max(500.0));
             if self.classic_2d {
                 parts.md = None;
                 parts.surface = None;
@@ -594,6 +598,31 @@ impl Navigator {
         Some(p)
     }
 
+    pub(super) fn release_closed_city(&mut self, renderer: &Renderer, scene: &mut Scene) {
+        if self.city.open {
+            self.city.closed_at = None;
+            return;
+        }
+        if self.city.closed_at.get_or_insert_with(std::time::Instant::now).elapsed() < std::time::Duration::from_secs(10) {
+            return;
+        }
+        if self.city.ground.is_none() && self.city.target.is_none() && self.city_job.is_none() {
+            return;
+        }
+        self.city_job = None;
+        self.city.ground = None;
+        if let Some((t, _, _)) = self.city.target.take() {
+            renderer.free_texture(scene, t);
+            scene.premultiplied.remove(&t);
+        }
+        if let Some(gpu) = self.gpu.as_mut() {
+            for id in [7, 14, 10, 15] {
+                gpu.drop_vertices(id);
+            }
+            gpu.drop_targets();
+        }
+    }
+
     pub(super) fn city(&mut self, renderer: &Renderer, scene: &mut Scene, f: &NavFrame) {
         self.atlas.begin_frame();
         let pal = *style::palette(self.light);
@@ -602,9 +631,7 @@ impl Navigator {
         let (x0, y0) = (((sw - w) * 0.5).round(), ((sh - h) * 0.5).round());
         self.city.rect = [x0, y0, x0 + w, y0 + h];
         let (tw, th) = (w as u32, h as u32);
-        if self.gpu.is_none() {
-            self.gpu = Some(Gpu::with_depth(&renderer.device, renderer.format(), map_samples(renderer.format()), self.atlas.size));
-        }
+        self.ensure_gpu(renderer);
         if self.city.target.map(|t| (t.1, t.2) != (tw, th)).unwrap_or(true) {
             if let Some((t, _, _)) = self.city.target.take() {
                 renderer.free_texture(scene, t);

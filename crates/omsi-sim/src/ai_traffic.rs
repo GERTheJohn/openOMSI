@@ -28,6 +28,7 @@ pub mod obstacles;
 pub mod foot_grid;
 pub mod parked;
 pub mod planning;
+pub mod random;
 pub mod scenery;
 pub mod setup;
 pub mod stats;
@@ -157,10 +158,6 @@ pub struct TrafficSim {
     /// on the roads - no aircraft, no parked car pulling out - while `target` is 0.
     pub lights_only: bool,
     pub spawn_radius: f64,
-    /// Since when (sim time) fewer than half the cars asked for drive about the player: open
-    /// country, where nothing within `NEAR_HIDE` is ever out of sight and a car coming along
-    /// the road could never be woken (see `omsi-app`'s `wake_dormant`).
-    pub starved_since: Option<f32>,
     pub time: f32,
     /// Where the camera is (the window sets it before `sync`): far cars show their script
     /// textures as stand-ins.
@@ -214,6 +211,10 @@ pub struct TrafficSim {
     /// Omsi.exe, where the 20 s check (0x7d9bdc) runs against every station's time, the ones
     /// shared out by distance too (0x616afc -> 0x73b474).
     pub timed_waits_only: bool,
+    /// The `ai_reaction` setting: a factor on every AI driver's reaction time (1.0: as
+    /// `model::personality` draws it, about 0.8 s). Below 1.0 a queue pulls away closer
+    /// together; `model::scale_reaction` keeps it from going under `PULL_OUT_WAIT`.
+    pub reaction_factor: f32,
     /// `--no-timetable-buses`: the timetable runs for the player's duty, but puts no AI
     /// bus on the road (#1762).
     pub no_timetable_buses: bool,

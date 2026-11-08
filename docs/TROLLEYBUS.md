@@ -82,15 +82,35 @@ the constants are in the vehicle's file, not in the game.
   Radio range is a circle around the frog measured from the vehicle's trolley reference
   position, not along the wire. There is no heading or approach filter: every radio switch
   in range on a matching channel can respond, even on a neighbouring road. Use channels to
-  separate nearby receivers. A vehicle transmits when entering a circle or changing its
-  direction request, route code or channel, not continuously while holding the same selection.
+  separate nearby receivers. After its initial step, a vehicle transmits only on a change
+  of direction request or route code, not continuously while holding the same selection.
+  Releasing a request to `0` transmits nothing, so a toggled or chosen switch is not handed
+  back to the route code.
+  A route code other than `0` is also sent to each receiver as the vehicle enters its range,
+  so the switches on a route set themselves as the bus arrives. Direction requests are never
+  sent on entry. Loading a vehicle and changing the channel alone never transmit, and a
+  direction selected outside reception range is not queued for later delivery.
   The last matching transmission sets the switch; another bus's stale selection does not
   immediately undo it. An unchanged position does not reset the display's change timer. Leaving the circle,
   sending an unknown route or selecting another channel leaves the frog as it was.
+  A momentary button can instead send `Trolley_Switch_Request = 2` while pressed and `0`
+  when released. Each press toggles the actual retained position of every matching receiver,
+  not a remembered cab selection. Holding it does not repeat; entering range, changing the
+  channel or changing the route while held does not toggle. Release and press again to send
+  another toggle. A request already held when the vehicle is first stepped is not a press.
+  Absolute left/right requests use the selection-change behavior above.
+  For manual-only radio control, keep the route code at `0` and use a momentary toggle
+  button. The driver reads the actual position from the roadside switch display. Range is
+  configurable reception coverage, not a model of antenna propagation or a safety interlock.
 * **Arcs and sound.** Where current is broken - the shoe leaving the wire, a pole coming off,
   an insulator or a frog crossed under power - an arc burns `L I^2 / 2` of the motor circuit's
   inductance (12 mH): the game draws a flash with sparks, lights the wire and the roof and
-  cracks. Coasting through an insulator strikes none; power on through it a loud one. The
+  cracks. Coasting through an insulator strikes none; power on through it a loud one. A frog
+  or an insulator crossed with more than 3 A (a coasting bus's auxiliaries often draw more)
+  arcs every time by default; a map's `[trolley_net]` can make those arcs rarer, weaker or need
+  more current (`frog_arc_*`, `insulator_arc_*` below). The chance is drawn per frog crossing
+  and per insulator entry and exit, from the vehicle's seed (repeatable). Arcs of a shoe
+  leaving the wire (see `roughness`) and of a pole coming off are not affected. The
   shoes hiss on the wire, louder with the current and the speed (a loop with the rectifier's
   300 Hz ripple); the contactors click, a shoe landing on the wire and a pole on its hook
   thud, a frog clatters. The sounds are made in the game unless the vehicle or the map gives
@@ -142,6 +162,12 @@ are the map's (x east, y north, z up, metres).
 voltage 600            nominal line voltage (V)
 spacing 0.6            distance between the two wires (m)
 roughness 0.0012       unevenness of the contact wire (m); worn or icy wire: 0.003 and more
+frog_arc_chance 1      chance (0..1) that a frog crossed under current arcs; 0: never
+frog_arc_scale 1       multiplier of a frog arc's energy (0..10): its flash and crack
+frog_arc_min_amps 3    least current (A) a frog crossing arcs with
+insulator_arc_chance 1    the same for each entry into and exit from a section insulator
+insulator_arc_scale 1
+insulator_arc_min_amps 3
 
 [trolley_section]
 id 1
@@ -164,7 +190,7 @@ mode radio             power | indicator | radio | fixed
 trigger 9              power/indicator: contact plate distance before the frog (m); ignored by radio
 sense 12               the current that counts as power on (A)
 invert 0
-initial straight
+initial straight       straight | branch | random (see below)
 route 158 branch       radio: route code 158 takes the branch (straight | branch | left | right)
 channel 2              radio: only vehicles sending on channel 2 set it
 range 150              radio: reception radius (m, 1..1000, default 150); never a contact plate
@@ -174,8 +200,6 @@ pos 300 -185.4 6.1
 length 1.0             dead stretch (m)
 
 [trolley_sounds]       the overhead line's sounds (see Sounds): on | off | a file beside trolley.txt
-hiss off
-snap on
 frog sounds\frog.wav
 switch sounds\switch.wav
 ```
@@ -186,6 +210,13 @@ needs a joint of exactly three spans; which one is the toe (the single side) and
 straight or to the side is worked out from their directions. A pole can follow the wire through
 a joint, a switch and across spans, and a crossing of two wires that do not share a joint is not
 a connection.
+
+A switch with `initial random` takes a way at random when the game first reads the map's wire.
+The game keeps that network until it quits, so placing a vehicle again or reloading the same map
+keeps the positions the switches have by then; a new draw needs a restart. In an online game
+(serving, hosting or joining) the players' switches are not synchronized, so `initial random`
+switches start straight there, the same for everyone. A room joined later on a map already
+driven in the same run keeps that run's network and its positions, drawn or not.
 
 The wire's masts and hangers are the map's own objects: the game draws the two wires (8.5 mm
 thick) and nothing else, whatever vehicle is driven (a bus or a car sees the wire too; a map
@@ -208,6 +239,7 @@ pos -0.3 1.0 4.16           the hinge on the roof (x right, y forward, z up, m)
 length 6.7                  boom length (m)
 rest_angle -1.5             elevation lying on the hook (degrees)
 work_angle 16               elevation in work (degrees): where the spring's force is rated
+max_angle 45                the highest it rises loose, held by its rope (degrees)
 tip_force 120               what the shoe presses the wire with at work_angle (N)
 mass 16                     boom with rope (kg)
 head_mass 3                 head and shoe (kg)
@@ -217,6 +249,8 @@ max_wire_angle 40           how far the boom may stand off the wire (degrees)
 kink_speed 3.0              sideways speed of the shoe a bend of the wire may ask (m/s)
 retriever 35                a rope retriever pulls it down at this rate after dewiring (deg/s)
 motor 1                     raised and lowered from the cab
+boom_bounce 1.1             the boom's bounce on a script's lifting gear (Hz)
+boom_damping 0.12           how quickly that bounce dies away (damping ratio)
 visible 1                   the game draws the boom and its rope (0: the model draws its own)
 reach 9                     how far from the rope's handle it can be handled (m)
 ```
@@ -266,7 +300,7 @@ direction Trolley_Direction     > 0.5 forward, < -0.5 reverse, else neutral (def
 indicator_left Blinker_Left     for switches in `indicator` mode
 indicator_right Blinker_Right
 raise_request Trolley_Poles_Raise   +1 raise, -1 lower the poles that have a motor
-switch_request Trolley_Switch_Request   radio switches: < -0.5 left, > 0.5 right (without it: the indicator)
+switch_request Trolley_Switch_Request   radio: -1 left, +1 right, 2 momentary toggle, 0 none (without it: indicator)
 switch_code Trolley_Switch_Code         radio switches: the route code, 0 none
 switch_channel Trolley_Switch_Channel   radio switches: the channel sent on
 ```
@@ -289,6 +323,9 @@ make sound by them):
 | `Trolley_Pole<k>_State` | 0 down on the hook, 1 being pulled down, 2 in the hand, 3 loose, 4 on the wire with the contact open, 5 on the wire |
 | `Trolley_Pole<k>_Contact` | 1 while the shoe touches the wire |
 | `Trolley_Pole<k>_Force` | what the shoe presses with (N) |
+| `Trolley_Pole<k>_Bounce` | 0..1 how hard the boom bounces on its script's lifting gear |
+| `Trolley_Pole<k>_Hit` | 0..1 how hard its last hit was (on the wire, back on it, against its rope) |
+| `Trolley_Pole<k>_Shoe_Yaw`, `_Shoe_Pitch` | the head's swivel against the boom (degrees): about the boom's up axis (+ to the right), then about its side axis (+ the far end up), so that the shoe lies along the wire; off the wire it swings back to 0 |
 | `Trolley_Volts`, `Trolley_Amps` | the voltage at the bus and the current from the line (negative: given back) |
 | `Trolley_Powered` | 1 while both poles are on live wire |
 | `Trolley_Notch` | the rheostat controller's position |
@@ -297,7 +334,32 @@ make sound by them):
 | `Trolley_Battery` | the battery's charge, 0..1 |
 
 A vehicle whose model carries its own poles puts `visible 0` in its `[trolley_pole]` and rotates
-its pole meshes by `Trolley_Pole<k>_Elev` and `_Azim`.
+its pole meshes by `Trolley_Pole<k>_Elev` and `_Azim`. Its head (the shoe and what swivels with it)
+turns on top of that by `_Shoe_Yaw` and then `_Shoe_Pitch`, about the head's pivot: a boom
+standing at 15 degrees under a level wire has `_Shoe_Pitch` -15, the shoe level on the wire.
+
+### A script's lifting gear
+
+A vehicle's script can run its poles' lifting gear itself, as an OMSI 2 door script runs its
+doors: it declares and writes `Trolley_Pole<k>_Gear`, where the gear's carriage is, 0 on the hook,
+1 just under the wire (the wire above it, else where the pole left the wire, else its
+`work_angle`). The boom rides on the carriage as a spring (`boom_bounce`, `boom_damping`), so
+wherever the carriage stops or starts the boom bounces; at 1 the gear lets it go, and its spring
+puts the shoe on the wire. Going below 1 from the wire takes the shoe off it; at 0 the hook
+catches the boom once it has come down.
+
+The script times the run as it likes (a delay, a stop halfway, the speeds, from its own constant
+file) and fires its run's sound itself, with a trigger of its own, as a door script does. The
+pole follows the variable from its first change until the run's end (on the wire or the hook);
+a variable left as it is moves nothing, so a hand or the cab still puts a pole up or down. Taken
+by hand, a pole leaves the script's run. Without the variable `motor 1` works as before.
+
+```
+'raise from the hook: 2 s to halfway, 3 s there, 2 s on
+(L.L.gear_t) (L.S.Timegap) + (S.L.gear_t)
+(L.L.gear_t) 2 < {if} (L.L.gear_t) 4 / {else} (L.L.gear_t) 5 < {if} 0.5 {else} (L.L.gear_t) 5 - 4 / 0.5 + 1 min {endif} {endif}
+(S.L.Trolley_Pole1_Gear) (S.L.Trolley_Pole2_Gear)
+```
 
 ## Sounds
 
@@ -305,23 +367,83 @@ The gear makes six sounds of its own, from noise and decaying tones (no files):
 
 | Sound | When | Sound trigger | Map key |
 |---|---|---|---|
-| hiss (a loop) | the shoes sliding on the wire, louder with the current and the speed | - (`Trolley_Hiss`, 0..1) | `hiss` |
-| arc crack | current broken: a shoe leaving the wire or a pole coming off under load, an insulator or a frog crossed under power | `trolley_snap` | `snap` |
-| frog clatter | a shoe going through a frog | `trolley_frog` | `frog` |
-| contactor click | the rheostat controller stepping | `trolley_click` | - |
-| thud | a shoe landing on the wire, a pole on its hook or coming off | `trolley_thud` | - |
-| hook | a pole's hook letting go or catching it | `trolley_clack` | - |
+| hiss (a loop) | the shoes sliding on the wire, louder with the current and the speed | - (`Trolley_Hiss`, 0..1) | - |
+| arc crack | current broken: a shoe leaving the wire or a pole coming off under load, an insulator or a frog crossed under power | `ev_trolleyarc` | - |
+| frog clatter | a shoe going through a frog | `ev_trolleyfrog` (below) | `frog` |
+| contactor click | the rheostat controller stepping | `ev_trolleycontactor` | - |
+| thud | a shoe landing on the wire or coming off it | `ev_trolleyhitup`, `wirehit`, `wireoff`, `dewire`, `hitmax` (below) | - |
+| hook | a pole's hook letting go or catching it | `ev_trolleyhookopen`, `hitdown` (below) | - |
 | switch mechanism | the selected leg actually changes, not when a shoe crosses it | - (map-owned) | `switch` |
 
-The built-in hiss and a map replacement hiss are located at each touching shoe, not the bus
-centre. Their maximum gain is 0.035: beyond 1 m a steep fade is added to the normal distance
-falloff, and they are completely silent at 5 m and beyond. They are also silent in the cab.
+A vehicle plays its own recordings of the poles as OMSI 2 buses do their doors'
+(`ev_doortriggeropen_0` as a door is ordered to move, `ev_doorhitclose_0` as it hits its stop).
+
+A pole's own triggers end in its number `_<k>`, from 1 as its `Trolley_Pole<k>` variables;
+the same trigger without the number plays for either pole (fired once when both do it in the
+same frame).
+
+The game fires these for what happens to a pole, whoever moves it (a hand, a script's lifting
+gear, a bounce):
+
+| Sound trigger | When | What to record |
+|---|---|---|
+| `ev_trolleyhookopen_<k>` | the pole is taken off its hook by hand | the hook opening |
+| `ev_trolleyhitup_<k>` | its shoe lands on the wire | the hit |
+| `ev_trolleywireoff_<k>` | its shoe is taken off the wire by the rope | the shoe leaving it |
+| `ev_trolleyhitdown_<k>` | it comes down on the roof and its hook catches it | the hit and the lock |
+| `ev_trolleydewire_<k>` | its shoe is thrown off the wire: a bounce, a bend, the bus too far aside | the shoe flying off |
+| `ev_trolleyhitmax_<k>` | the loose boom is brought up short by its rope at `max_angle` | the jolt |
+| `ev_trolleywirehit_<k>` | its shoe falls back on the wire after bouncing off it | a knock |
+| `ev_trolleyfrog_<k>` | its shoe goes through a frog | the clatter |
+| `ev_trolleyinsulator_<k>` | its shoe goes over a section insulator (silent without it) | the click |
+| `ev_trolleyarc` | an arc's crack (see above) | the crack |
+| `ev_trolleycontactor` | the rheostat controller steps | the contactor |
+
+One recording for several of these is one `[sound]` with several `[trigger]`s, as OMSI 2's. A
+vehicle's entry on a trigger replaces the game's own sound even while it is silent: a lifting
+gear's recording that has the shoe's hit in it (the script fires it with the run, as a door's
+opening) keeps the hit's own entry quiet while its script's run goes on, with a `[volcurve]` (a
+triggered sound's `[conditionSingle]` is not looked at, as in OMSI 2):
+
+```
+[sound]
+pole_on_wire.wav
+1
+[trigger]
+ev_trolleyhitup_1
+[volcurve]
+my_gear_running_1
+[pnt]
+0
+1
+[pnt]
+1
+0
+```
+
+`Trolley_Pole<k>_Hit` (0..1) is how hard pole k's last hit was (on the wire, back on it, against
+its rope), for a `[volcurve]` as OMSI 2's `doorSpeed_<n>`. A `[volcurve]` on `Trolley_Pole<k>_Elev`
+or `_State` cuts a run's sound short where a hand stops the pole, as `door_<n>` does a door's.
+The boom's bounce has no sound of its own; a vehicle can loop a rattle or a spring's creak on
+`Trolley_Pole<k>_Bounce` (0..1).
+
+The built-in hiss is located at each touching shoe, not the bus
+centre. Its maximum gain is 0.035: beyond 1 m a steep fade is added to the normal distance
+falloff, and it is completely silent at 5 m and beyond. It is also silent in the cab.
 A bus-authored `sound.cfg` hiss keeps its own volume, viewpoint and 3-D settings; old sliding
 loops should not be played over the native hiss as well.
 
+The other built-in sounds are at full volume within a set distance (`[3d]`-style: switch
+mechanism 15 m, arc crack 10 m, frog 8 m, thud and hook 6 m, contactors 4 m) and fall off as
+1/d beyond. In the player's cab the sounds on the roof come through the body at half volume
+and somewhat dull with doors and windows shut, a switch out on the line at a fifth and duller,
+both clear as doors and windows open (`Snd_OutsideVol`); the contactors are in the bus and are
+not muffled. How a sound is heard is
+fixed when it starts: one started in the cab stays muffled if the view changes while it plays.
+
 **A vehicle** plays its own the OMSI way, in its `sound.cfg`: an entry with `[trigger]` on one
 of the triggers above plays each time that happens (the game fires the trigger as a script's
-`(T.L.trolley_thud)` would), and the game's own sound is not played; an entry whose volume
+`(T.L.ev_trolleyhitup_1)` would), and the game's own sound is not played; an entry whose volume
 curve or condition reads `Trolley_Hiss` takes the place of the hiss (a `[sound]` without a
 trigger loops; its `[volcurve]` on `Trolley_Hiss` makes it follow the hiss). An entry with a silent file or no volume silences a sound.
 
@@ -330,7 +452,9 @@ trigger loops; its `[volcurve]` on `Trolley_Hiss` makes it follow the hiss). An 
 sound\pole_hook.wav
 1
 [trigger]
-trolley_clack
+ev_trolleyhookopen
+[trigger]
+ev_trolleyhitdown
 
 [sound]
 sound\shoe_hiss.wav
@@ -345,10 +469,10 @@ Trolley_Hiss
 1
 ```
 
-**A map** chooses the overhead line's sounds (hiss, arcs, frog crossings and switch movements) in a `[trolley_sounds]` block of
+**A map** chooses the overhead line's own sounds (frog crossings and switch movements) in a `[trolley_sounds]` block of
 its `trolley.txt`: each key `on` (the game's own), `off`, or a sound file beside `trolley.txt`
-(a file that cannot be read leaves the game's own). The vehicle's own equipment (contactors,
-thud, hook) is the vehicle's: those keys are ignored there with a warning.
+(a file that cannot be read leaves the game's own). The vehicle's sounds (hiss, arc crack,
+contactors, thud, hook) are the vehicle's: those keys are ignored there with a warning.
 
 Which plays: the vehicle's `sound.cfg` entry, else the map's choice, else the game's own. A
 vehicle and a map that say nothing hear the game's own sounds, as before.
@@ -365,10 +489,15 @@ share the network's events, so the same movement is not played once per bus.
 
 | Key | Where | Does |
 |---|---|---|
-| R (hold) | outside the bus near its back (on foot, outside or free camera) | take the rope of the nearest pole: it rises and follows your look; let go to put it on the wire |
+| R (hold) | outside the bus near its back (on foot, outside or free camera) | take the rope of the nearest pole: it rises to just under the wire you look at (else the one above its working angle); let go to let its spring put it on |
 | T | the same | pull the nearest pole down (the shoe off the wire, the boom on its hook) |
 | Shift + R / T | the same | both poles |
-| R / T | in the cab | raise / lower the poles that have a motor |
+| Ctrl + R | anywhere, the cab too | both poles on the wire by themselves, or down if one is on, with or without a lifting gear; not where the keyboard file or the bus has Ctrl+R (Ctrl+T is OMSI's change_give) |
+
+In the cab R and T are the gearbox's: the poles answer the cab's own switch and Ctrl+R there.
+
+The game's auto-start (Shift+U) also puts the poles on the wire, when each one has a wire
+within its reach.
 
 On foot you get out with Ctrl+Shift+G (the `get_up` setting); the outside camera is F3.
 
@@ -400,13 +529,30 @@ the whole gear are in `crates/omsi-trolley`.
 ## The mouse's hand on a pole
 
 A click on the cab's pole switch (a plain OMSI 2 trolleybus: `cp_SHTANGALEV`, `cp_SHTANGAPRAV`
-or what its model calls it), or - from outside the cab, with the outside, free or foot view -
-a click on a pole itself, takes that pole in hand. The tip of the boom follows the mouse: it goes
-to the wire the cursor points at (as the R key's gaze does), or to where the cursor points when
-no wire is near. The next click lets go, and the spring lifts the shoe into the wire it was aimed
-at; a wire missed, the pole flies loose and the motor's retriever (if it has one) pulls it down.
-A pole on the wire is taken off it by the same click (an arc, as for any dewiring under
-current). One hand: one pole at a time. T still pulls a pole down by its rope.
+or what its model calls it) takes that pole in hand. The tip of the boom follows the mouse: it
+goes to the wire the cursor points at (as the R key's gaze does), or to where the cursor points
+when no wire is near. The next click lets go, and the spring lifts the shoe into the wire it was
+aimed at; a wire missed, the pole flies loose and the motor's retriever (if it has one) pulls it
+down. One hand: one pole at a time. T still pulls a pole down by its rope.
+
+From outside the cab (the outside, free or foot view) a click on a pole is the hand on its rope:
+the pole is taken where it is, the mouse up lets it rise, down pulls it down, sideways swings it,
+with no help to the wire.
+The next click lets go, and the spring lifts the shoe from where it was held: into the wire just
+above it, or loose past it. Pushed up through a wire the shoe takes it and the hand lets go; let
+go a little over its hook, the pole catches on it. A pole on the wire is taken off it the same way
+(an arc, as for any dewiring under current).
+
+A model can hold the ropes itself, through its own `[mouseevent]`s on the boom and the rope, as
+OMSI 2 trolleybuses do: its script declares and writes, per pole k,
+
+| Variable | Meaning |
+|---|---|
+| `Trolley_Pole<k>_Rope` | 1 the rope is held (the press of its mouse event), -1 pulled down (a retriever), 0 let go |
+| `Trolley_Pole<k>_Rope_X`, `_Rope_Y` | the mouse's movement while held, in pixels (`(L.S.mouse_x)` / `_y` of its `_drag`, added up): the game takes them each step and sets them to 0 |
+
+A pole with these takes no click of the game's own; the hand works as above, held while the
+mouse button is.
 
 From the driver's seat the poles are behind the head and the wire is out of the cursor's reach,
 so a click on the switch has the motor raise the pole to the wire nearest its tip (the hand lets

@@ -399,6 +399,9 @@ struct SettingsPage: View {
             SettingToggle(label: "Collisions with people", key: "collision_pedestrians", fallback: true)
             SettingToggle(label: "Start at the real time", key: "use_real_time")
             SettingToggle(label: "Start on today's date", key: "use_real_date")
+            if store.flag("use_real_date") {
+                SettingToggle(label: "Keep today's year, even outside the map's years", key: "use_real_year")
+            }
             SettingToggle(label: "Sync the clock with the real time (locks the time)", key: "time_sync")
             SettingToggle(label: "Sync the weather with METAR (locks the weather)", key: "metar_sync")
             SettingSelect(label: "Time speed (not in multiplayer or with the real-time sync)", key: "time_speed", options: [("1", "Real time"), ("2", "x2"), ("4", "x4"), ("8", "x8"), ("15", "x15"), ("30", "x30")])
@@ -416,6 +419,14 @@ struct SettingsPage: View {
                 SettingToggle(label: "Translate the remaining texts automatically (offline, downloads 620 MB once)", key: "machine_translation")
                 SettingToggle(label: "The launcher rests while a game runs (gives the graphics card to the game)", key: "launcher_rest", fallback: true)
                 SettingToggle(label: "Discord Rich Presence", key: "discord_status", fallback: false, help: "Shows the launcher or your map, bus, line and multiplayer status in Discord.")
+                if store.flag("discord_status") {
+                    SettingToggle(label: "Discord: the map", key: "discord_map", fallback: true)
+                    SettingToggle(label: "Discord: the bus", key: "discord_bus", fallback: true)
+                    SettingToggle(label: "Discord: the line and tour", key: "discord_line", fallback: true)
+                    SettingToggle(label: "Discord: the next stop and the delay", key: "discord_stop", fallback: true)
+                    SettingToggle(label: "Discord: multiplayer and the number of players", key: "discord_players", fallback: true)
+                    SettingToggle(label: "Discord: buttons to the website and the community", key: "discord_buttons", fallback: true)
+                }
                 SettingToggle(label: "Voice chat in multiplayer", key: "voice_enabled", fallback: false, help: "Hold the nearby (V) or radio (B) key to talk. The microphone is used only while a key is held; nothing is recorded")
             }
             SettingToggle(label: "Disable plugins", key: "disable_plugins", fallback: true, help: "Starts the next game without Lua or legacy OMSI plugins, including vehicle plugins. Plugin features will be unavailable. Normal bus scripts still run.")
@@ -436,7 +447,8 @@ struct SettingsPage: View {
             SettingSelect(label: "Photo mode", key: "photo_mode", options: [("simple", "Simple"), ("advanced", "Advanced (for photographers)")], help: "Simple: the lens, the look and the frame. Advanced: a camera body - sensor size, P/A/S/M exposure with ISO and metering, white balance in kelvin, tilt-shift, histogram, focus peaking, bracketing and 16-bit PNG.")
             SectionTitle("Navigator").padding(.top, 8)
             SettingToggle(label: "Navigator (Shift+N: map, schedule, off)", key: "navigator", fallback: true)
-            SettingToggle(label: "Route arrows (as in OMSI 2)", key: "nav_arrows")
+            SettingToggle(label: "Dynamic route arrows", key: "nav_dynamic_arrows")
+            SettingToggle(label: "Map-placed route arrows", key: "nav_map_arrows")
             SettingToggle(label: "AI vehicles on the map", key: "nav_ai", fallback: true)
             if store.flag("nav_ai", true) {
                 SettingToggle(label: "Cars on the map too", key: "nav_ai_cars", fallback: true)

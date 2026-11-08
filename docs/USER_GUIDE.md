@@ -483,7 +483,7 @@ the bus waits at a stop) and `head_idle_pace` (0.5..2: how fast that sway moves,
 pace it is designed at), `collision_objects` (walls, poles and bridges stop the bus; off is OMSI's `no_collision`
 option and is taken from OMSI's options when openOMSI starts the first time), `graphics_api`
 (`auto`, `vulkan`, `dx12` on Windows, `gl`, `angle` on Windows: which graphics interface the
-game asks first - with `auto` on Windows DirectX 12, then Vulkan, then OpenGL, then ANGLE;
+game asks first - with `auto` on Windows DirectX 12, then Vulkan, then OpenGL, then ANGLE, except with a discrete AMD Radeon, where `auto` asks Vulkan first, as it is faster there; after a device lost on Vulkan, `auto` keeps to DirectX 12 on that machine until the next version of the game, or until `~/.openomsi/vulkan-lost` is deleted;
 on Linux and Android Vulkan, then OpenGL; a Mac, iPhone and iPad always use Metal; see
 *Graphics API* below), `ctrl_off` (game controllers switched off on the Controls page, by
 name, separated by `|`) and `language` (the language of the interface - `ENG`, `DEU`, `FRA`,
@@ -493,6 +493,8 @@ English). The file also carries a `version`.
 With `collision_vehicles` enabled, impacts against AI traffic are delivered to the struck
 vehicle's collision scripts and deform a localized part of its body mesh where the model
 has editable body geometry.
+
+**NVIDIA DLSS and AMD FSR 3** (Settings → Graphics → Upscaling, `upscaler=dlss` or `fsr3`, with `upscale_quality=native`, `quality`, `balanced`, `performance` or `ultra_performance`; Windows, DirectX 12 or Vulkan; DLSS only with an NVIDIA RTX card, FSR 3 with any): the picture is drawn smaller and brought up to the window with the help of the last frames, in place of the anti-aliasing and the render scale, from the next start (not with a headset or a triple screen). They are offered only when the vendor's DLLs are beside `openomsi.exe`. The Windows x64 package includes AMD's FidelityFX DLLs. NVIDIA's are not included: on an RTX card the launcher offers to download them from NVIDIA once you accept NVIDIA's licences. See [the licensing review](UPSCALER_THIRD_PARTY_LICENSING.md) and [NVIDIA DLL license scope](NVIDIA_DLL_LICENSE_SCOPE.md). Where an upscaler cannot start, `game.log` says why and the picture is drawn as without it.
 
 **Graphics API** (Settings → Graphics → Display, `graphics_api`; not on a Mac): the interface named is asked first and
 the others follow, so a machine without it still starts. *ANGLE (DirectX 11)* (Windows) runs
@@ -610,7 +612,7 @@ vignette.
 `OMSI_RT_REFL_HALF=1` traces the reflections at half size, `OMSI_DEBUG_RT=n` (see
 `crates/omsi-render/src/rt.rs`) shows its buffers.
 
-*Road sunlight glare* (`road_glare=0..2`, default 1) scales direct sun highlights on roads and ground in Enhanced without changing diffuse daylight or puddle reflections. *Traffic headlight brightness* (`traffic_headlights=0..2`, default 1) changes white headlamp glows and projected road beams on other vehicles in Vanilla, Vanilla+ and Enhanced, not the player's lamps or the street lamps. Both controls apply while driving.
+*Road glare* (`road_glare=0..2`, default 1) scales the highlights of the sun, the headlights and the street lamps on roads and ground in Enhanced, wet roads included, without changing diffuse daylight. *Traffic headlight brightness* (`traffic_headlights=0..2`, default 1) changes white headlamp glows and projected road beams on other vehicles in Vanilla, Vanilla+ and Enhanced, not the player's lamps or the street lamps. Both controls apply while driving.
 
 Built-up snow on roads and roofs (`road_snow=0|1`) is **off by default**; enabling it in Graphics adds gradual snow accumulation and tyre tracks. With it off, the weather's conventional OMSI 2 road snow remains available. Existing saved preferences are preserved.
 
@@ -678,8 +680,9 @@ planned time and whether the bus is early or late, in the interface's language
 default: drag it anywhere and size it at its corner; `nav_widget`), *Navigator size*
 (`nav_size`), *Classic 2D navigator* (`nav_classic_2d`, off by default) for a lighter
 top-down street map without detailed terrain and buildings, *3D buildings on the map*
-(`nav_3d`, on by default) and *Route arrows (as in
-OMSI 2)* over the road (`nav_arrows`, off by default). A click on the navigator (or
+(`nav_3d`, on by default), *Dynamic route arrows* over the road (`nav_dynamic_arrows`)
+and *Map-placed route arrows* (`nav_map_arrows`). Both are off by default.
+Older settings files use the previous route-arrows value for both. A click on the navigator (or
 **Shift+M**) opens the city map: a large window over the game
 with the whole map from above - every road with its street name (read from the map's
 street name signs), the trip's route by traffic with arrows, its stops with their times,

@@ -19,8 +19,11 @@ impl World {
         self.mirror_aspect.lock().clear();
         self.mirror_glass.lock().clear();
         let set = self.upload_vehicle(renderer, scene, vt, scheme, true);
+        self.player_textures.lock().clear();
         let mut render = self.instantiate_vehicle(renderer, scene, vt, &set, None, None, false);
+        self.protect_player_textures(&set, &mut render);
         own_skinned_meshes(renderer, scene, vt, &mut render);
+        render.own_set = Some(set);
         render
     }
 
@@ -43,7 +46,9 @@ impl World {
             None
         };
         let mut render = self.instantiate_vehicle(renderer, scene, vt, &set, None, shared, false);
+        self.protect_player_textures(&set, &mut render);
         own_skinned_meshes(renderer, scene, vt, &mut render);
+        render.own_set = Some(set);
         render
     }
 
@@ -195,7 +200,11 @@ impl World {
 
     /// An AI vehicle has gone: its own instances, textures and materials go back to the free
     /// lists, and its set loses a user.
-    pub fn release_vehicle(&self, renderer: &Renderer, scene: &mut Scene, render: VehicleRender) {
+    pub fn release_vehicle(&self, renderer: &Renderer, scene: &mut Scene, mut render: VehicleRender) {
+        if let Some(set) = render.own_set.take() {
+            let (mut tex_ids, mut mesh_ids) = (self.vehicle_textures.lock(), self.vehicle_meshes.lock());
+            free_set(renderer, scene, set, &mut tex_ids, &mut mesh_ids, &mut self.gpu.lock());
+        }
         {
             let mut gpu = self.gpu.lock();
             // the mesh copies its `[smoothskin]` meshes were reshaped in belong to this
@@ -257,6 +266,7 @@ impl World {
                     own_materials.extend(built.materials());
                 }
                 for f in v.free {
+                    own_textures.extend(f.spare);
                     // the pictures it showed: shared, gone with their last holder
                     let mut shared = f.shared.lock();
                     for p in f.held {
@@ -328,36 +338,9 @@ impl World {
         let mut gpu = self.gpu.lock();
         let (mut textures, mut meshes) = (0usize, 0usize);
         for k in &gone {
-            let s = sets.remove(k).unwrap();
-            for m in s.materials {
-                gpu.free_material(renderer, scene, m);
-            }
-            for p in s.textures {
-                let Some(e) = tex_ids.get_mut(&p) else {
-                    continue;
-                };
-                e.1 = e.1.saturating_sub(1);
-                if e.1 == 0 {
-                    let id = e.0;
-                    tex_ids.remove(&p);
-                    renderer.free_texture(scene, id);
-                    gpu.free_textures.push(id);
-                    textures += 1;
-                }
-            }
-            for mk in s.mesh_keys {
-                let Some(e) = mesh_ids.get_mut(&mk) else {
-                    continue;
-                };
-                e.1 = e.1.saturating_sub(1);
-                if e.1 == 0 {
-                    let id = e.0;
-                    mesh_ids.remove(&mk);
-                    renderer.free_mesh(scene, id);
-                    gpu.free_meshes.push(id);
-                    meshes += 1;
-                }
-            }
+            let (t, m) = free_set(renderer, scene, sets.remove(k).unwrap(), &mut tex_ids, &mut mesh_ids, &mut gpu);
+            textures += t;
+            meshes += m;
         }
         if omsi_cfg::flags::OMSI_PROFILE.is_set() {
             log::info!(
@@ -606,9 +589,6 @@ impl World {
         lod: bool,
     ) -> VehicleRender {
         let mut gpu = self.gpu.lock();
-        let blank = |gpu: &mut GpuCache, scene: &mut Scene, w: i32, h: i32| {
-            Some(gpu.add_blank(renderer, scene, w.max(1) as u32, h.max(1) as u32))
-        };
         let blank_text = |gpu: &mut GpuCache, scene: &mut Scene, w: i32, h: i32| {
             Some(gpu.add_blank_mips(renderer, scene, w.max(1) as u32, h.max(1) as u32))
         };
@@ -624,11 +604,8 @@ impl World {
             .collect();
         let script_textures: Vec<Option<TextureId>> = match shared_script {
             Some(s) => s.to_vec(),
-            None => vt
-                .model
-                .script_textures
-                .iter()
-                .map(|(w, h)| blank(&mut gpu, scene, *w, *h))
+            None => (0..vt.model.script_textures.len())
+                .map(|i| Some(gpu.add_script_slot(renderer, scene, &vt.model, i)))
                 .collect(),
         };
         let mut instances = Vec::new();
@@ -856,6 +833,7 @@ impl World {
             hidden: false,
             interior_lamps: std::cell::Cell::new(None),
             interior_blocks: std::cell::OnceCell::new(),
+            own_set: None,
         }
     }
 
@@ -1268,36 +1246,6 @@ impl World {
             dyn_slots.push(DynSlot { mesh: instances.len(), slot, text: text_slot, script: script_slot, script_trans, lit: script_slot.is_some_and(|i| vt.model.html_page_lit(i)), tex, alpha, transmap, night, lightmap, envmap, address, extra, color, emissive });
         }
         base
-    }
-
-    /// Cache state and reload ownership shared by free textures in this world: one
-    /// `[matl_freetex]` of a vehicle slot, standing in for `key` (`diffuse`: the slot's own
-    /// texture), on the halves its bits name (see `free_texture_defs`).
-    fn free_texture_slot(
-        &self,
-        var: String,
-        key: Option<TextureId>,
-        diffuse: bool,
-        halves: u32,
-        dirs: &[PathBuf],
-    ) -> FreeTex {
-        FreeTex {
-            remote: None,
-            remote_key: String::new(),
-            image: None,
-            reloads: self.freetex_reloads.clone(),
-            var,
-            diffuse,
-            key,
-            halves,
-            dirs: dirs.to_vec(),
-            textures: self.textures.clone(),
-            pictures: HashMap::new(),
-            current: None,
-            shared: self.vehicle_textures.clone(),
-            held: Vec::new(),
-            wants_upgrade: self.freetex_upgrades.clone(),
-        }
     }
 }
 

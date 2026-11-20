@@ -955,21 +955,34 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn pending_macro_calls(&self, block: BlockId) -> impl Iterator<Item = (usize, &str)> {
+        self.pending
+            .iter()
+            .filter(move |(id, _, _)| *id == block as usize)
+            .map(|(_, op, name)| (*op, name.as_str()))
+    }
+
+    fn same_frame_ops(&self, left: BlockId, right: BlockId) -> bool {
+        self.p.blocks[left as usize].ops == self.p.blocks[right as usize].ops
+            // Macro calls are placeholders until all script files have been compiled.
+            && self.pending_macro_calls(left).eq(self.pending_macro_calls(right))
+    }
+
     fn register(&mut self, kind: BlockKind, id: BlockId) {
         match kind {
             BlockKind::Init => self.p.init.push(id),
             BlockKind::Frame => {
-                let is_dup = self.p.frame[self.file_frames.0..].iter().any(|&prev| {
-                    self.p.blocks[prev as usize].ops == self.p.blocks[id as usize].ops
-                });
+                let is_dup = self.p.frame[self.file_frames.0..]
+                    .iter()
+                    .any(|&prev| self.same_frame_ops(prev, id));
                 if !is_dup {
                     self.p.frame.push(id);
                 }
             }
             BlockKind::FrameAi => {
-                let is_dup = self.p.frame_ai[self.file_frames.1..].iter().any(|&prev| {
-                    self.p.blocks[prev as usize].ops == self.p.blocks[id as usize].ops
-                });
+                let is_dup = self.p.frame_ai[self.file_frames.1..]
+                    .iter()
+                    .any(|&prev| self.same_frame_ops(prev, id));
                 if !is_dup {
                     self.p.frame_ai.push(id);
                 }
@@ -1376,6 +1389,33 @@ mod tests {
             2,
             "a frame block without its end, cut short by the next header, still runs"
         );
+    }
+
+    #[test]
+    fn frame_dedup_keeps_distinct_macro_calls_in_frame_and_frame_ai() {
+        let p = program_of(concat!(
+            "{macro:first}\n1\n{end}\n",
+            "{macro:second}\n2\n{end}\n",
+            "{frame}\n(M.L.first)\n{end}\n",
+            "{frame}\n(M.L.second)\n{end}\n",
+            "{frame}\n(M.L.first)\n{end}\n",
+            "{frame_ai}\n(M.L.first)\n{end}\n",
+            "{frame_ai}\n(M.L.second)\n{end}\n",
+            "{frame_ai}\n(M.L.first)\n{end}\n",
+        ));
+        let expected = [
+            *p.macros.get("first").unwrap(),
+            *p.macros.get("second").unwrap(),
+        ];
+        for frames in [&p.frame, &p.frame_ai] {
+            assert_eq!(frames.len(), 2, "distinct macro calls must not be deduplicated");
+            for (&frame, &macro_id) in frames.iter().zip(expected.iter()) {
+                assert!(matches!(
+                    p.blocks[frame as usize].ops.as_slice(),
+                    [Op::Macro(id)] if *id == macro_id
+                ));
+            }
+        }
     }
 
     #[test]

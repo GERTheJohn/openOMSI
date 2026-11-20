@@ -1403,18 +1403,11 @@ mod tests {
             "{frame_ai}\n(M.L.second)\n{end}\n",
             "{frame_ai}\n(M.L.first)\n{end}\n",
         ));
-        let expected = [
-            *p.macros.get("first").unwrap(),
-            *p.macros.get("second").unwrap(),
-        ];
+        let expected = [*p.macros.get("first").unwrap(), *p.macros.get("second").unwrap()];
         for frames in [&p.frame, &p.frame_ai] {
             assert_eq!(frames.len(), 2, "distinct macro calls must not be deduplicated");
-            for (&frame, &macro_id) in frames.iter().zip(expected.iter()) {
-                assert!(matches!(
-                    p.blocks[frame as usize].ops.as_slice(),
-                    [Op::Macro(id)] if *id == macro_id
-                ));
-            }
+            assert_eq!(p.blocks[frames[0] as usize].ops, vec![Op::Macro(expected[0])]);
+            assert_eq!(p.blocks[frames[1] as usize].ops, vec![Op::Macro(expected[1])]);
         }
     }
 

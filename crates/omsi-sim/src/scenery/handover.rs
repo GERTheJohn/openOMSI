@@ -73,6 +73,22 @@ fn switch_var_value(inst: &SceneryInstance) -> Option<f32> {
     None
 }
 
+// Assign untagged paths different values without reusing explicit [switchdir] values.
+fn switch_path_value(dirs: &[Option<i32>], path: usize) -> Option<f32> {
+    let dir = dirs.get(path)?;
+    if let Some(value) = dir {
+        return Some(*value as f32);
+    }
+    if dirs.iter().all(Option::is_none) {
+        return Some(path as f32);
+    }
+    let untagged_before = dirs[..path].iter().filter(|d| d.is_none()).count();
+    (0..dirs.len())
+        .filter(|candidate| !dirs.iter().flatten().any(|d| *d == *candidate as i32))
+        .nth(untagged_before)
+        .map(|candidate| candidate as f32)
+}
+
 impl SceneryState {
     /// Take the changes `inbox` has (in order). A list that followed another inbox (another
     /// map) is emptied first.
@@ -102,19 +118,9 @@ impl SceneryState {
     /// Whether switch object `id` is set to its path `path` (None: no such switch).
     pub fn switch_set_to(&self, id: i64, path: u16) -> Option<bool> {
         let o = self.get(self.find(id)?);
+        let target = switch_path_value(&o.switch_dirs, path as usize)?;
         let val = switch_var_value(&o.inst)?;
-        if let Some(Some(d)) = o.switch_dirs.get(path as usize) {
-            Some((val - *d as f32).abs() < 0.5)
-        } else if o.switch_dirs.iter().any(|d| d.is_some()) {
-            let any_other_active = o
-                .switch_dirs
-                .iter()
-                .filter_map(|d| *d)
-                .any(|d| (val - d as f32).abs() < 0.5);
-            Some(!any_other_active)
-        } else {
-            Some((val - path as f32).abs() < 0.5)
-        }
+        Some((val - target).abs() < 0.5)
     }
 
     /// Throw the points the trains need (`Traffic::switch_requests`): a switch object gets
@@ -122,12 +128,8 @@ impl SceneryState {
     pub fn set_switches(&mut self, requests: &[(i64, u16)]) {
         for &(id, path) in requests {
             let Some(o) = self.find_mut(id) else { continue };
-            let target_d = if let Some(Some(d)) = o.switch_dirs.get(path as usize) {
-                *d as f32
-            } else if o.switch_dirs.iter().any(|d| d.is_some()) {
-                0.0
-            } else {
-                path as f32
+            let Some(target_d) = switch_path_value(&o.switch_dirs, path as usize) else {
+                continue;
             };
             let mut changed = false;
             for &var in SWITCH_VARS {
@@ -317,6 +319,35 @@ mod tests {
         let other = SceneryInbox::default();
         s.take_inbox(&other);
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn inferred_paths_never_select_explicit_switch_dirs_or_invalid_paths() {
+        let inbox = SceneryInbox::default();
+        let mut s = SceneryState::default();
+        let mut o = object(&inbox, 41, (0, 0));
+        o.switch_dirs = vec![None, Some(0), None, Some(1)];
+        inbox.push(SceneryChange::Add(o));
+        s.take_inbox(&inbox);
+
+        assert_eq!(s.switch_set_to(41, 4), None);
+        s.set_switches(&[(41, 0)]);
+        assert_eq!(s.switch_set_to(41, 0), Some(true));
+        assert_eq!(s.switch_set_to(41, 1), Some(false));
+        assert_eq!(s.switch_set_to(41, 2), Some(false));
+
+        s.set_switches(&[(41, 1)]);
+        assert_eq!(s.switch_set_to(41, 1), Some(true));
+        assert_eq!(s.switch_set_to(41, 0), Some(false));
+
+        s.set_switches(&[(41, 2)]);
+        assert_eq!(s.switch_set_to(41, 2), Some(true));
+        assert_eq!(s.switch_set_to(41, 0), Some(false));
+        assert_eq!(s.switch_set_to(41, 1), Some(false));
+
+        s.set_switches(&[(41, 99)]);
+        assert_eq!(s.switch_set_to(41, 2), Some(true));
+        assert_eq!(s.switch_set_to(41, 99), None);
     }
 
     /// A lamp's script is found by its key, whatever order the loader's threads handed the

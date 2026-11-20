@@ -5,6 +5,7 @@
 //! each new object (and each tile that goes) to a [`SceneryInbox`], and the list takes
 //! them in that order at the start of its step and before anything else reads it.
 
+use super::SceneryInstance;
 use super::state::{SceneryObject, SceneryState};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -33,7 +34,11 @@ static INBOXES: AtomicU64 = AtomicU64::new(1);
 
 impl Default for SceneryInbox {
     fn default() -> Self {
-        SceneryInbox { id: INBOXES.fetch_add(1, Ordering::Relaxed), next_key: AtomicU64::new(1), changes: Default::default() }
+        SceneryInbox {
+            id: INBOXES.fetch_add(1, Ordering::Relaxed),
+            next_key: AtomicU64::new(1),
+            changes: Default::default(),
+        }
     }
 }
 
@@ -46,6 +51,42 @@ impl SceneryInbox {
     pub fn push(&self, change: SceneryChange) {
         self.changes.push(change);
     }
+}
+
+const SWITCH_VARS: &[&str] = &[
+    "Switch",
+    "Weiche",
+    "weiche_dir",
+    "weiche_pos",
+    "Weichenstellung",
+    "Weichenlage",
+    "switch_pos",
+    "active_path",
+];
+
+fn switch_var_value(inst: &SceneryInstance) -> Option<f32> {
+    for &name in SWITCH_VARS {
+        if let Some(val) = inst.var(name) {
+            return Some(val);
+        }
+    }
+    None
+}
+
+// Assign untagged paths different values without reusing explicit [switchdir] values.
+fn switch_path_value(dirs: &[Option<i32>], path: usize) -> Option<f32> {
+    let dir = dirs.get(path)?;
+    if let Some(value) = dir {
+        return Some(*value as f32);
+    }
+    if dirs.iter().all(Option::is_none) {
+        return Some(path as f32);
+    }
+    let untagged_before = dirs[..path].iter().filter(|d| d.is_none()).count();
+    (0..dirs.len())
+        .filter(|candidate| !dirs.iter().flatten().any(|d| *d == *candidate as i32))
+        .nth(untagged_before)
+        .map(|candidate| candidate as f32)
 }
 
 impl SceneryState {
@@ -74,28 +115,42 @@ impl SceneryState {
         }
     }
 
-    /// Whether switch object `id` is set to its path `path` (None: no such switch, or the
-    /// path has no `[switchdir]`).
+    /// Whether switch object `id` is set to its path `path` (None: no such switch).
     pub fn switch_set_to(&self, id: i64, path: u16) -> Option<bool> {
         let o = self.get(self.find(id)?);
-        let d = (*o.switch_dirs.get(path as usize)?)?;
-        Some(o.inst.var("Switch").map(|v| (v - d as f32).abs() < 0.5).unwrap_or(false))
+        let target = switch_path_value(&o.switch_dirs, path as usize)?;
+        let val = switch_var_value(&o.inst)?;
+        Some((val - target).abs() < 0.5)
     }
 
-    /// Throw the points the trains need (`Traffic::switch_requests`): a switch object whose
-    /// `[path]` carries a `[switchdir]` gets that value in its script's `Switch` variable,
-    /// and its blades turn with it. (The first object of each id, as a search would find
-    /// it: every train asks for the points of its next five lanes on every frame.)
+    /// Throw the points the trains need (`Traffic::switch_requests`): a switch object gets
+    /// that value in its switch variables, and its blades turn with it.
     pub fn set_switches(&mut self, requests: &[(i64, u16)]) {
         for &(id, path) in requests {
             let Some(o) = self.find_mut(id) else { continue };
-            if let Some(Some(d)) = o.switch_dirs.get(path as usize) {
-                let d = *d;
-                let was = o.inst.var("Switch");
-                if o.inst.set_var("Switch", d as f32) && was != Some(d as f32) && omsi_cfg::flags::OMSI_DEBUG_SWITCHES.is_set() {
-                    let path = o.sco_path.as_deref().map(|p| p.display().to_string()).unwrap_or_default();
-                    log::info!("switch {} ({}) at ({:.0}, {:.0}) thrown to {d} for a train", id, path, o.pos.x, o.pos.y);
+            let Some(target_d) = switch_path_value(&o.switch_dirs, path as usize) else {
+                continue;
+            };
+            let mut changed = false;
+            for &var in SWITCH_VARS {
+                let was = o.inst.var(var);
+                if o.inst.set_var(var, target_d) && was != Some(target_d) {
+                    changed = true;
                 }
+            }
+            if changed && omsi_cfg::flags::OMSI_DEBUG_SWITCHES.is_set() {
+                let path = o
+                    .sco_path
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                log::info!(
+                    "switch {} ({}) at ({:.0}, {:.0}) thrown to {target_d} for a train",
+                    id,
+                    path,
+                    o.pos.x,
+                    o.pos.y
+                );
             }
         }
     }
@@ -127,7 +182,13 @@ impl SceneryState {
         }
         // (found anew only when objects came or went, not by a walk of the list each frame)
         if self.signals.0 != self.generation() {
-            let found: Vec<u32> = self.objects().iter().enumerate().filter(|(_, o)| ids.contains(&o.map_id)).map(|(i, _)| i as u32).collect();
+            let found: Vec<u32> = self
+                .objects()
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| ids.contains(&o.map_id))
+                .map(|(i, _)| i as u32)
+                .collect();
             self.signals = (self.generation(), found);
         }
         let signals = std::mem::take(&mut self.signals.1);
@@ -137,17 +198,30 @@ impl SceneryState {
             if o.inst.var("Signal") != Some(a) {
                 o.inst.set_var("Signal", a);
                 if omsi_cfg::flags::OMSI_DEBUG_SIGNALS.is_set() {
-                    log::info!("signal {} at ({:.0}, {:.0}) shows {a}", o.map_id, o.pos.x, o.pos.y);
+                    log::info!(
+                        "signal {} at ({:.0}, {:.0}) shows {a}",
+                        o.map_id,
+                        o.pos.x,
+                        o.pos.y
+                    );
                 }
             }
-            o.inst.set_var("NextSignal", next.get(&o.map_id).copied().unwrap_or(0.0));
+            o.inst
+                .set_var("NextSignal", next.get(&o.map_id).copied().unwrap_or(0.0));
         }
         self.signals.1 = signals;
     }
 
     /// A press, release or move on page `page` of object `map_id`: what the page does
     /// (`omsi.setVar`, `omsi.trigger`) reaches the object's script.
-    pub fn html_pointer(&mut self, map_id: i64, page: usize, u: f32, v: f32, kind: crate::htmltex::PointerKind) -> bool {
+    pub fn html_pointer(
+        &mut self,
+        map_id: i64,
+        page: usize,
+        u: f32,
+        v: f32,
+        kind: crate::htmltex::PointerKind,
+    ) -> bool {
         match self.find_mut(map_id) {
             Some(o) => o.inst.html_pointer(page, u, v, kind),
             None => false,
@@ -163,7 +237,9 @@ impl SceneryState {
         let ok = o.inst.trigger(event);
         let drag = format!("{event}_drag");
         let low = event.to_ascii_lowercase();
-        if (low.contains("taste") || low.contains("button") || low.contains("click")) && o.inst.program.trigger(&drag).is_some() {
+        if (low.contains("taste") || low.contains("button") || low.contains("click"))
+            && o.inst.program.trigger(&drag).is_some()
+        {
             o.inst.host.mouse = (0.0, 0.0);
             o.inst.trigger(&drag);
             o.inst.host.mouse = (0.0, 0.0);
@@ -236,12 +312,42 @@ mod tests {
         assert!(s.objects().windows(2).all(|w| w[0].key < w[1].key));
         // points thrown through the list, read back
         assert_eq!(s.switch_set_to(1, 1), Some(false));
+        assert_eq!(s.switch_set_to(1, 0), Some(true));
         s.set_switches(&[(1, 1)]);
         assert_eq!(s.switch_set_to(1, 1), Some(true));
-        assert_eq!(s.switch_set_to(1, 0), None);
+        assert_eq!(s.switch_set_to(1, 0), Some(false));
         let other = SceneryInbox::default();
         s.take_inbox(&other);
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn inferred_paths_never_select_explicit_switch_dirs_or_invalid_paths() {
+        let inbox = SceneryInbox::default();
+        let mut s = SceneryState::default();
+        let mut o = object(&inbox, 41, (0, 0));
+        o.switch_dirs = vec![None, Some(0), None, Some(1)];
+        inbox.push(SceneryChange::Add(o));
+        s.take_inbox(&inbox);
+
+        assert_eq!(s.switch_set_to(41, 4), None);
+        s.set_switches(&[(41, 0)]);
+        assert_eq!(s.switch_set_to(41, 0), Some(true));
+        assert_eq!(s.switch_set_to(41, 1), Some(false));
+        assert_eq!(s.switch_set_to(41, 2), Some(false));
+
+        s.set_switches(&[(41, 1)]);
+        assert_eq!(s.switch_set_to(41, 1), Some(true));
+        assert_eq!(s.switch_set_to(41, 0), Some(false));
+
+        s.set_switches(&[(41, 2)]);
+        assert_eq!(s.switch_set_to(41, 2), Some(true));
+        assert_eq!(s.switch_set_to(41, 0), Some(false));
+        assert_eq!(s.switch_set_to(41, 1), Some(false));
+
+        s.set_switches(&[(41, 99)]);
+        assert_eq!(s.switch_set_to(41, 2), Some(true));
+        assert_eq!(s.switch_set_to(41, 99), None);
     }
 
     /// A lamp's script is found by its key, whatever order the loader's threads handed the
@@ -251,7 +357,12 @@ mod tests {
         let inbox = SceneryInbox::default();
         let mut s = SceneryState::default();
         let lamp = |key: u64, tile: (i32, i32)| {
-            let inst = SceneryInstance::new(Arc::new(omsi_script::Program::default()), &[], crate::SimClock::default(), &[]);
+            let inst = SceneryInstance::new(
+                Arc::new(omsi_script::Program::default()),
+                &[],
+                crate::SimClock::default(),
+                &[],
+            );
             SceneryChange::Lamp(crate::scenery::LampScript { key, tile, inst })
         };
         let (a, b, c) = (inbox.next_key(), inbox.next_key(), inbox.next_key());
